@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.cyrene.dev/echo/product/v1/judge-profile.schema.json",
+  "title": "Echo JudgeProfile v1",
+  "description": "Reusable LLM-judge configuration resolved through Exchange.",
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "judgeModel",
+    "exchangeEndpointRef",
+    "promptTemplate",
+    "createdAt",
+    "updatedAt",
+    "resourceVersion"
+  ],
+  "properties": {
+    "id": {"type": "string", "format": "uuid"},
+    "name": {"type": "string"},
+    "judgeModel": {"type": "string"},
+    "exchangeEndpointRef": {"type": "string"},
+    "promptTemplate": {"type": "string"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "updatedAt": {"type": "string", "format": "date-time"},
+    "resourceVersion": {"type": "integer", "minimum": 1}
+  },
+  "additionalProperties": false
+}

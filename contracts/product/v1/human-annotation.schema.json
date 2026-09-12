@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.cyrene.dev/echo/product/v1/human-annotation.schema.json",
+  "title": "Echo HumanAnnotation v1",
+  "description": "Explicit human review over one sample; never overwrites the model score.",
+  "type": "object",
+  "required": [
+    "id",
+    "runId",
+    "sampleIndex",
+    "reviewer",
+    "note",
+    "createdAt",
+    "updatedAt",
+    "resourceVersion"
+  ],
+  "properties": {
+    "id": {"type": "string", "format": "uuid"},
+    "runId": {"type": "string", "format": "uuid"},
+    "sampleIndex": {"type": "integer", "minimum": 1},
+    "reviewer": {"type": "string"},
+    "manualScore": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+    "correctedOutput": {"type": ["string", "null"]},
+    "preference": {"enum": ["accept", "reject", "prefer_corrected", null]},
+    "note": {"type": "string"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "updatedAt": {"type": "string", "format": "date-time"},
+    "resourceVersion": {"type": "integer", "minimum": 1}
+  },
+  "additionalProperties": false
+}

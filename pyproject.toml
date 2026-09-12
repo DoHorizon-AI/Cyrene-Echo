@@ -1,0 +1,74 @@
+[build-system]
+requires = ["hatchling==1.32.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cyrene-echo"
+version = "0.1.0"
+description = "Cyrene Product-owned evaluation run and gate contract"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = [
+  "httpx==0.28.1",
+  "fastapi==0.141.1",
+  "pydantic==2.13.5",
+  "uvicorn==0.52.4",
+  # Generic Plugins-owned direct transport; capability payloads remain owned
+  # by evaluation.runner.v1 and never pass through Platform.
+  "cyrene-plugin-runtime @ git+https://github.com/DoHorizon-AI/Cyrene-Plugins-Official.git@c3f75689ebb10b2e07b3816310e768d74ae6cc10#subdirectory=sdk/python/cyrene_plugin_runtime",
+]
+
+[project.scripts]
+cyrene-echo = "cyrene_echo.server:main"
+
+[dependency-groups]
+dev = [
+  "cyrene-exact-match-evaluator @ git+https://github.com/DoHorizon-AI/Cyrene-Plugins-Official.git@c3f75689ebb10b2e07b3816310e768d74ae6cc10#subdirectory=plugins/evaluation/exact-match",
+  "httpx==0.28.1",
+  "jsonschema==4.26.0",
+  "mypy==2.3.1",
+  "openapi-spec-validator==0.9.0",
+  "pytest==9.1.1",
+  "ruff==0.16.5",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cyrene_echo"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.uv]
+# Echo's tested application stack uses the current generated gRPC runtime.
+# Resolve the older accepted SDK metadata against the same versions used by
+# the other Product direct-Plugin adapters.
+override-dependencies = [
+  "grpcio==1.83.0",
+  "protobuf==7.36.0",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+filterwarnings = [
+  "ignore:Using `httpx` with `starlette.testclient` is deprecated:starlette.exceptions.StarletteDeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["RUF002"]
+
+[tool.ruff.lint.per-file-ignores]
+# INDEX_HTML is a single string constant embedding hand-formatted HTML/CSS/JS
+# with Chinese UI copy; line-length and fullwidth-punctuation checks there
+# reflect embedded content, not Python style.
+"src/cyrene_echo/ui_page.py" = ["E501", "RUF001", "RUF002", "RUF003"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src/cyrene_echo"]

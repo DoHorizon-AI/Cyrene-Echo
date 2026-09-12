@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.cyrene.dev/echo/product/v1/gate-decision.schema.json",
+  "title": "Echo GateDecision v1",
+  "type": "object",
+  "required": [
+    "id",
+    "runId",
+    "resultId",
+    "outcome",
+    "rule",
+    "observedScore",
+    "threshold",
+    "createdAt",
+    "resourceVersion"
+  ],
+  "properties": {
+    "id": {"type": "string", "format": "uuid"},
+    "runId": {"type": "string", "format": "uuid"},
+    "resultId": {"type": "string", "format": "uuid"},
+    "outcome": {"enum": ["PASS", "FAIL", "ERROR"]},
+    "rule": {"const": "score >= threshold"},
+    "observedScore": {"type": "number", "minimum": 0, "maximum": 1},
+    "threshold": {"type": "number", "minimum": 0, "maximum": 1},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "resourceVersion": {"type": "integer", "minimum": 1}
+  },
+  "additionalProperties": false
+}

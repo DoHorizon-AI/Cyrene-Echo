@@ -1,0 +1,556 @@
+# Generated from implemented Product actions; ArtifactRef remains provider-neutral.
+openapi: 3.1.2
+x-cyrene-contract-profile: product-http-v1
+info:
+  title: Cyrene Echo Product API
+  version: 1.0.0
+paths:
+  /api/v1/evaluation-inputs:
+    post:
+      summary: Import Input
+      operationId: import_input_api_v1_evaluation_inputs_post
+      parameters:
+      - name: idempotency-key
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportEvaluationInput'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvaluationInput'
+        '422':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '404':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '409':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '502':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '503':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+    get:
+      summary: List Inputs
+      operationId: list_inputs_api_v1_evaluation_inputs_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EvaluationInput'
+                title: Response List Inputs Api V1 Evaluation Inputs Get
+        '404':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '409':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '422':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '502':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '503':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+  /api/v1/evaluation-inputs/{input_id}:
+    get:
+      summary: Get Input
+      operationId: get_input_api_v1_evaluation_inputs__input_id__get
+      parameters:
+      - name: input_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Input Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvaluationInput'
+        '422':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '404':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '409':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '502':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '503':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+  /api/v1/evaluation-inputs/{input_id}/samples:
+    get:
+      summary: Preview Input
+      operationId: preview_input_api_v1_evaluation_inputs__input_id__samples_get
+      parameters:
+      - name: input_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Input Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Preview Input Api V1 Evaluation Inputs  Input Id  Samples Get
+        '422':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '404':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '409':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '502':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '503':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+  /api/v1/evaluation-inputs/{input_id}/actions/evaluate:
+    post:
+      summary: Evaluate Input
+      operationId: evaluate_input_api_v1_evaluation_inputs__input_id__actions_evaluate_post
+      parameters:
+      - name: input_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Input Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvaluateInput'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvaluationRun'
+        '422':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '404':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '409':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '502':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '503':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+  /api/v1/feedback-sets/{feedback_id}/actions/send-to-catalyst:
+    post:
+      summary: Send Feedback
+      operationId: send_feedback_api_v1_feedback_sets__feedback_id__actions_send_to_catalyst_post
+      parameters:
+      - name: feedback_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Feedback Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendFeedback'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HandoffReceipt'
+        '422':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '404':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '409':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '502':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+        '503':
+          description: Product action rejected (RFC 9457)
+          content:
+            application/problem+json:
+              schema:
+                $ref: ./generated/common/problem-details.schema.json
+components:
+  schemas:
+    ArtifactRef:
+      $ref: ./generated/platform/artifact-ref.schema.json
+    EvaluateInput:
+      properties:
+        suiteId:
+          type: string
+          format: uuid
+          title: Suiteid
+        engineBindingId:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Enginebindingid
+        referenceAnswers:
+          additionalProperties:
+            type: string
+          type: object
+          maxProperties: 1000
+          title: Referenceanswers
+      additionalProperties: false
+      type: object
+      required:
+      - suiteId
+      - engineBindingId
+      title: EvaluateInput
+      description: Choose an existing evaluator explicitly. | 显式选择现有评估器。
+    EvaluationInput:
+      properties:
+        sourceRef:
+          $ref: '#/components/schemas/ProductResourceRef'
+        artifact:
+          $ref: '#/components/schemas/ArtifactRef'
+        format:
+          type: string
+          const: NAVIGATOR_TEXT_JSONL_V1
+          title: Format
+        contentRefs:
+          items:
+            type: string
+          type: array
+          maxItems: 2000
+          minItems: 1
+          title: Contentrefs
+        provenanceRefs:
+          items:
+            type: string
+          type: array
+          maxItems: 100
+          title: Provenancerefs
+        id:
+          type: string
+          format: uuid
+          title: Id
+        resourceRef:
+          $ref: '#/components/schemas/ProductResourceRef'
+        state:
+          type: string
+          enum:
+          - DRAFT
+          - STARTED
+          title: State
+          default: DRAFT
+        evaluationRun:
+          anyOf:
+          - $ref: '#/components/schemas/ProductResourceRef'
+          - type: 'null'
+        createdAt:
+          type: string
+          format: date-time
+          title: Createdat
+      additionalProperties: false
+      type: object
+      required:
+      - sourceRef
+      - artifact
+      - format
+      - contentRefs
+      - id
+      - resourceRef
+      - createdAt
+      title: EvaluationInput
+      description: A draft never invokes an evaluator. | 草稿不会调用评估器。
+    EvaluationRun:
+      $ref: ./evaluation-run.schema.json
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    HandoffReceipt:
+      properties:
+        targetResource:
+          $ref: '#/components/schemas/ProductResourceRef'
+        status:
+          type: string
+          enum:
+          - DRAFT
+          - PREPARED
+          - STARTED
+          title: Status
+        openIn:
+          type: string
+          title: Openin
+      additionalProperties: false
+      type: object
+      required:
+      - targetResource
+      - status
+      - openIn
+      title: HandoffReceipt
+      description: Target-owned resource acknowledgement. | 目标产品资源回执。
+    ImportEvaluationInput:
+      properties:
+        sourceRef:
+          $ref: '#/components/schemas/ProductResourceRef'
+        artifact:
+          $ref: '#/components/schemas/ArtifactRef'
+        format:
+          type: string
+          const: NAVIGATOR_TEXT_JSONL_V1
+          title: Format
+        contentRefs:
+          items:
+            type: string
+          type: array
+          maxItems: 2000
+          minItems: 1
+          title: Contentrefs
+        provenanceRefs:
+          items:
+            type: string
+          type: array
+          maxItems: 100
+          title: Provenancerefs
+      additionalProperties: false
+      type: object
+      required:
+      - sourceRef
+      - artifact
+      - format
+      - contentRefs
+      title: ImportEvaluationInput
+      description: Immutable source snapshot for a future evaluation. | 待评估的不可变快照。
+    ProductFailure:
+      properties:
+        code:
+          type: string
+          title: Code
+        message:
+          type: string
+          title: Message
+        retryable:
+          type: boolean
+          title: Retryable
+      additionalProperties: false
+      type: object
+      required:
+      - code
+      - message
+      - retryable
+      title: ProductFailure
+      description: Failure persisted on a Product resource. | 产品资源持久化失败。
+    ProductResourceRef:
+      properties:
+        uri:
+          type: string
+          maxLength: 2000
+          pattern: ^(cyrene|https?)://[^\s]+$
+          title: Uri
+        id:
+          type: string
+          maxLength: 512
+          minLength: 1
+          title: Id
+        resourceVersion:
+          type: integer
+          minimum: 1.0
+          title: Resourceversion
+      additionalProperties: false
+      type: object
+      required:
+      - uri
+      - id
+      - resourceVersion
+      title: ProductResourceRef
+      description: Product identity without imported business authority. | 外部产品资源身份。
+    RunState:
+      type: string
+      enum:
+      - RUNNING
+      - SUCCEEDED
+      - FAILED
+      - CANCELLED
+      title: RunState
+      description: EvaluationRun Product lifecycle. | 评估运行产品生命周期。
+    SendFeedback:
+      properties:
+        datasetId:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Datasetid
+      additionalProperties: false
+      type: object
+      title: SendFeedback
+      description: Optionally prepare the next version of a selected Catalyst Dataset.
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError

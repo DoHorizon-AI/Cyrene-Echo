@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.cyrene.dev/echo/product/v1/sample-record.schema.json",
+  "title": "Echo SampleRecord v1",
+  "description": "Immutable per-sample evaluation evidence anchored to one EvaluationRun.",
+  "type": "object",
+  "required": [
+    "id",
+    "runId",
+    "sampleIndex",
+    "evaluator",
+    "inputDigest",
+    "inputRecord",
+    "passed",
+    "score",
+    "createdAt",
+    "resourceVersion"
+  ],
+  "properties": {
+    "id": {"type": "string", "format": "uuid"},
+    "runId": {"type": "string", "format": "uuid"},
+    "sampleIndex": {"type": "integer", "minimum": 1},
+    "evaluator": {"enum": ["exact_match.v1", "llm_judge.v1"]},
+    "inputDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "inputRecord": {"type": "object"},
+    "expected": {},
+    "actual": {},
+    "rawOutput": {"type": ["string", "null"]},
+    "passed": {"type": "boolean"},
+    "score": {"type": "number", "minimum": 0, "maximum": 1},
+    "modelRef": {"type": ["string", "null"]},
+    "endpointRef": {"type": ["string", "null"]},
+    "usage": {"oneOf": [{"$ref": "#/$defs/usageFacts"}, {"type": "null"}]},
+    "judgeIdentity": {"type": ["string", "null"]},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "resourceVersion": {"type": "integer", "minimum": 1}
+  },
+  "$defs": {
+    "usageFacts": {
+      "type": "object",
+      "required": ["source"],
+      "additionalProperties": false,
+      "properties": {
+        "promptTokens": {"type": ["integer", "null"], "minimum": 0},
+        "completionTokens": {"type": ["integer", "null"], "minimum": 0},
+        "totalTokens": {"type": ["integer", "null"], "minimum": 0},
+        "source": {"type": "string"}
+      }
+    }
+  },
+  "additionalProperties": false
+}

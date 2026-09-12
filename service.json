@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "com.cyrene.service.echo",
+  "name": "Echo",
+  "service": "echo",
+  "visibility": "public",
+  "distribution": "advanced-service-plugin",
+  "status": "active-product",
+  "core": {
+    "protocol_version": 1,
+    "minimum_core_version": "0.1.0"
+  },
+  "source_roots": [
+    "src"
+  ]
+}

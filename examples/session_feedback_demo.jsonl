@@ -1,0 +1,4 @@
+{"instruction":"2+2?","expected":"4","actual":"4","output":"4","model":"qwen-demo","endpoint":"http://reactor/v1","usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}
+{"instruction":"中国首都是哪里?","expected":"北京","actual":"上海","output":"上海","model":"qwen-demo","endpoint":"http://reactor/v1"}
+{"instruction":"水的分子式?","expected":"H2O","actual":"H2O","output":"H2O","model":"qwen-demo","endpoint":"http://reactor/v1"}
+{"instruction":"Translate 'hello' to French.","expected":"Bonjour","actual":"Bonjour","output":"Bonjour","model":"qwen-demo","endpoint":"http://reactor/v1","usage":{"prompt_tokens":8,"completion_tokens":2}}
