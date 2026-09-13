@@ -15,7 +15,7 @@ dependencies = [
   "uvicorn==0.52.4",
   # Generic Plugins-owned direct transport; capability payloads remain owned
   # by evaluation.runner.v1 and never pass through Platform.
-  "cyrene-plugin-runtime @ git+https://github.com/DoHorizon-AI/Cyrene-Plugins-Official.git@c3f75689ebb10b2e07b3816310e768d74ae6cc10#subdirectory=sdk/python/cyrene_plugin_runtime",
+  "cyrene-plugin-runtime @ git+https://github.com/DoHorizon-AI/Cyrene-Plugins-Official.git@3afbac4d386eb7a27f6778149187884820c0b7f6#subdirectory=sdk/python/cyrene_plugin_runtime",
 ]
 
 [project.scripts]
@@ -23,7 +23,7 @@ cyrene-echo = "cyrene_echo.server:main"
 
 [dependency-groups]
 dev = [
-  "cyrene-exact-match-evaluator @ git+https://github.com/DoHorizon-AI/Cyrene-Plugins-Official.git@c3f75689ebb10b2e07b3816310e768d74ae6cc10#subdirectory=plugins/evaluation/exact-match",
+  "cyrene-exact-match-evaluator @ git+https://github.com/DoHorizon-AI/Cyrene-Plugins-Official.git@3afbac4d386eb7a27f6778149187884820c0b7f6#subdirectory=plugins/evaluation/exact-match",
   "httpx==0.28.1",
   "jsonschema==4.26.0",
   "mypy==2.3.1",

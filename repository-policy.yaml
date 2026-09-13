@@ -5,10 +5,10 @@ repository:
   # Clean-root publication target; the live GitHub setting is switched and read back separately.
   visibility: public
   source_owner: Cyrene Evaluation Product Team
-  remote_default_branch: main
+  remote_default_branch: develop
   integration_branch: develop
-  release_branch: main
-  default_branch: main
+  release_branch: release
+  default_branch: develop
 ownership:
   owns:
   - Evaluation suites, runs, results, and gate decisions
