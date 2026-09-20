@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -25,7 +24,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry, Resource
 
 from cyrene_echo import create_app
-from cyrene_echo.engine import _parse_judge_score, sha256_file
+from cyrene_echo.engine import EchoArtifactPlane, _parse_judge_score
 
 
 def _publish_jsonl(client: TestClient, records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -38,18 +37,11 @@ def _publish_jsonl(client: TestClient, records: list[dict[str, Any]]) -> dict[st
 
 
 def _stage_artifact(path: Path, artifact_root: Path) -> dict[str, Any]:
-    """Copy a local file into the artifact plane and return its ArtifactRef. | 投入制品。"""
+    """Publish a local file through the Product artifact plane. | 投入制品。"""
 
-    digest = sha256_file(path)
-    digest_hex = digest.removeprefix("sha256:")
-    objects = artifact_root / "sha256"
-    objects.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(path, objects / digest_hex)
+    reference = EchoArtifactPlane(artifact_root).publish_bytes(path.read_bytes(), kind="dataset")
     return {
-        "uri": f"artifact://sha256/{digest_hex}",
-        "digest": digest,
-        "size_bytes": path.stat().st_size,
-        "kind": "dataset",
+        **reference.model_dump(exclude_none=True),
     }
 
 

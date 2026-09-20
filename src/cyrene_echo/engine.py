@@ -13,7 +13,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import shutil
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
@@ -22,6 +21,9 @@ from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol
+
+from cy_artifacts import ArtifactError, ArtifactKind, LocalArtifactProvider
+from cy_artifacts import ArtifactRef as PlatformArtifactRef
 
 from cyrene_echo.domain import (
     ArtifactRef,
@@ -346,13 +348,12 @@ class ArtifactPlane(Protocol):
 
 
 class EchoArtifactPlane:
-    """Echo-owned filesystem adapter for the ArtifactRef wire shape. | Echo 本地制品适配器。"""
+    """Platform Artifact SDK adapter for the ArtifactRef wire shape. | Echo 制品适配器。"""
 
     def __init__(self, root: Path) -> None:
         self.root = root
-        self.objects = root / "sha256"
+        self._provider = LocalArtifactProvider(root)
         self.staging = root / ".staging"
-        self.objects.mkdir(parents=True, exist_ok=True)
         self.staging.mkdir(parents=True, exist_ok=True)
 
     def resolve(self, reference: ArtifactRef) -> Path:
@@ -366,22 +367,16 @@ class EchoArtifactPlane:
                 detail="The ArtifactRef URI and digest identify different content.",
                 status=422,
             )
-        path = self.objects / digest_hex
-        if not path.is_file():
+        try:
+            resolved = self._provider.resolve(PlatformArtifactRef.from_dict(reference.model_dump()))
+        except ArtifactError as exc:
             raise EchoError(
                 code="ECHO_ARTIFACT_UNAVAILABLE",
                 title="Artifact unavailable",
                 detail="The evaluation input cannot be read.",
                 status=422,
-            )
-        if path.stat().st_size != reference.size_bytes or sha256_file(path) != reference.digest:
-            raise EchoError(
-                code="ECHO_ARTIFACT_DIGEST_MISMATCH",
-                title="Artifact integrity failure",
-                detail="The input size or digest does not match its ArtifactRef.",
-                status=422,
-            )
-        return path
+            ) from exc
+        return Path(resolved.location)
 
     def stage_path(self, name: str) -> Path:
         """Return an evaluator staging path. | 返回评估器暂存路径。"""
@@ -391,29 +386,23 @@ class EchoArtifactPlane:
     def publish(self, path: Path) -> ArtifactRef:
         """Publish immutable report bytes. | 发布不可变报告字节。"""
 
-        digest = sha256_file(path)
-        digest_hex = digest.removeprefix("sha256:")
-        destination = self.objects / digest_hex
-        if not destination.exists():
-            shutil.copy2(path, destination)
-        return ArtifactRef(
-            uri=f"artifact://sha256/{digest_hex}",
-            digest=digest,
-            size_bytes=destination.stat().st_size,
-            kind="report",
-        )
+        return self.publish_bytes(path.read_bytes(), kind="report")
 
     def publish_bytes(self, data: bytes, *, kind: str) -> ArtifactRef:
         """Publish immutable bytes with an explicit artifact kind. | 发布字节制品。"""
 
-        digest = sha256_bytes(data)
-        digest_hex = digest.removeprefix("sha256:")
-        destination = self.objects / digest_hex
-        if not destination.exists():
-            destination.write_bytes(data)
-        return ArtifactRef(
-            uri=f"artifact://sha256/{digest_hex}",
-            digest=digest,
-            size_bytes=destination.stat().st_size,
-            kind=kind,
-        )
+        staged = self.stage_path(f"{sha256_bytes(data).removeprefix('sha256:')}.bin")
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        staged.write_bytes(data)
+        try:
+            reference = self._provider.publish(staged, kind=ArtifactKind(kind))
+        except ArtifactError as exc:
+            raise EchoError(
+                code="ECHO_ARTIFACT_UNAVAILABLE",
+                title="Artifact unavailable",
+                detail="The artifact bytes could not be published.",
+                status=422,
+            ) from exc
+        finally:
+            staged.unlink(missing_ok=True)
+        return ArtifactRef(**reference.to_dict())

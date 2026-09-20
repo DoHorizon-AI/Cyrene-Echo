@@ -66,17 +66,15 @@ class LifecycleActions:
 
     def import_input(self, command: ImportEvaluationInput, key: str | None) -> EvaluationInput:
         path = self.service.artifacts.resolve(command.artifact)
-        if (
-            command.artifact.kind != "dataset"
-            or not path.is_file()
-            or path.stat().st_size > 16 * 1024**2
-        ):
+        if not path.is_file() or path.stat().st_size > 16 * 1024**2:
             raise EchoError(
                 code="ECHO_INPUT_INVALID",
                 title="Invalid evaluation input",
                 detail="Select a text dataset snapshot of at most 16 MiB.",
                 status=422,
             )
+        # Artifact kind is a producer-owned category, so the snapshot is accepted
+        # on its declared format and verified content instead of a shared vocabulary.
         self._rows(command.artifact)
         identifier = uuid4()
         digest = hashlib.sha256(command.model_dump_json().encode()).hexdigest()

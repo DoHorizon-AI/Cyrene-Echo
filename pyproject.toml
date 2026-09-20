@@ -13,6 +13,7 @@ dependencies = [
   "fastapi==0.141.1",
   "pydantic==2.13.5",
   "uvicorn==0.52.4",
+  "cyrene-artifacts @ git+https://github.com/DoHorizon-AI/Cyrene-Platform.git@c59be6f2bd82489fbe933dadff84fc589e00afd9#subdirectory=sdk/python/cyrene_artifacts",
   # Generic Plugins-owned direct transport; capability payloads remain owned
   # by evaluation.runner.v1 and never pass through Platform.
   "cyrene-plugin-runtime @ git+https://github.com/DoHorizon-AI/Cyrene-Plugins-Official.git@3afbac4d386eb7a27f6778149187884820c0b7f6#subdirectory=sdk/python/cyrene_plugin_runtime",
@@ -72,3 +73,7 @@ ignore = ["RUF002"]
 python_version = "3.12"
 strict = true
 files = ["src/cyrene_echo"]
+
+[[tool.mypy.overrides]]
+module = ["cy_artifacts.*"]
+ignore_missing_imports = true

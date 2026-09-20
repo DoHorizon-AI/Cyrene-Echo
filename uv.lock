@@ -144,10 +144,16 @@ wheels = [
 ]
 
 [[package]]
+name = "cyrene-artifacts"
+version = "0.1.0"
+source = { git = "https://github.com/DoHorizon-AI/Cyrene-Platform.git?subdirectory=sdk%2Fpython%2Fcyrene_artifacts&rev=c59be6f2bd82489fbe933dadff84fc589e00afd9#c59be6f2bd82489fbe933dadff84fc589e00afd9" }
+
+[[package]]
 name = "cyrene-echo"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cyrene-artifacts" },
     { name = "cyrene-plugin-runtime" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -168,6 +174,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cyrene-artifacts", git = "https://github.com/DoHorizon-AI/Cyrene-Platform.git?subdirectory=sdk%2Fpython%2Fcyrene_artifacts&rev=c59be6f2bd82489fbe933dadff84fc589e00afd9" },
     { name = "cyrene-plugin-runtime", git = "https://github.com/DoHorizon-AI/Cyrene-Plugins-Official.git?subdirectory=sdk%2Fpython%2Fcyrene_plugin_runtime&rev=3afbac4d386eb7a27f6778149187884820c0b7f6" },
     { name = "fastapi", specifier = "==0.141.1" },
     { name = "httpx", specifier = "==0.28.1" },
