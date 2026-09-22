@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Any
@@ -43,23 +42,21 @@ from cyrene_echo.domain import (
 )
 from cyrene_echo.engine import EchoArtifactPlane, EvaluationExecutionPort
 from cyrene_echo.errors import EchoError, EvaluationEngineFailure, map_echo_error
-from cyrene_echo.logging import (
-    emit_diagnostic_error,
-    parse_w3c_traceparent,
-    sanitize_request_id,
-)
 from cyrene_echo.lifecycle import (
     EvaluateInput,
     HandoffReceipt,
     LifecycleActions,
     SendFeedback,
 )
+from cyrene_echo.logging import (
+    emit_diagnostic_error,
+    parse_w3c_traceparent,
+    sanitize_request_id,
+)
 from cyrene_echo.plugin_evaluation import evaluation_port_from_environment
 from cyrene_echo.service import EchoService
 from cyrene_echo.store import EchoStore
 from cyrene_echo.ui_page import INDEX_HTML
-
-
 
 
 def create_app(

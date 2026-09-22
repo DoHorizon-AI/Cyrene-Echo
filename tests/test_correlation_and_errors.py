@@ -11,13 +11,11 @@ import sys
 from pathlib import Path
 from uuid import uuid4
 
-import pytest
 from fastapi.testclient import TestClient
 
 from cyrene_echo.api import create_app
 from cyrene_echo.errors import (
     ECHO_ERROR_MAPPINGS,
-    EchoError,
     map_echo_error,
 )
 from cyrene_echo.logging import (
@@ -44,8 +42,8 @@ def test_parse_w3c_traceparent_invalid() -> None:
     assert parse_w3c_traceparent(None) is None
     assert parse_w3c_traceparent("") is None
     assert parse_w3c_traceparent("invalid-header") is None
-    assert parse_w3c_traceparent(f"00-{'0'*32}-{'1'*16}-01") is None
-    assert parse_w3c_traceparent(f"00-{'1'*32}-{'0'*16}-01") is None
+    assert parse_w3c_traceparent(f"00-{'0' * 32}-{'1' * 16}-01") is None
+    assert parse_w3c_traceparent(f"00-{'1' * 32}-{'0' * 16}-01") is None
 
 
 def test_sanitize_correlation_id() -> None:
