@@ -20,6 +20,7 @@ from cyrene_echo.domain import (
     EvaluationResult,
     EvaluationRun,
     EvaluationSuite,
+    FeedbackHandoff,
     FeedbackSet,
     GateDecision,
     HumanAnnotation,
@@ -76,6 +77,7 @@ class EchoStore:
         | SampleRecord
         | HumanAnnotation
         | FeedbackSet
+        | FeedbackHandoff
         | EvaluationInput,
     ) -> None:
         """Upsert one typed resource document. | 写入一个类型化资源文档。"""
@@ -212,6 +214,33 @@ class EchoStore:
 
         document = self._get("feedback_set", resource_id)
         return FeedbackSet.model_validate_json(document) if document else None
+
+    def get_feedback_handoff(self, resource_id: UUID) -> FeedbackHandoff | None:
+        """Read a confirmed Catalyst handoff receipt. | 读取 Catalyst 交接回执。"""
+
+        document = self._get("feedback_handoff", resource_id)
+        return FeedbackHandoff.model_validate_json(document) if document else None
+
+    def save_feedback_handoff(self, feedback_set: FeedbackSet, handoff: FeedbackHandoff) -> None:
+        """Atomically mark delivery and retain the target receipt. | 原子保存交接结果。"""
+
+        documents = [
+            (
+                "feedback_set",
+                str(feedback_set.id),
+                feedback_set.model_dump_json(by_alias=True, exclude_none=True),
+            ),
+            (
+                "feedback_handoff",
+                str(handoff.id),
+                handoff.model_dump_json(by_alias=True, exclude_none=True),
+            ),
+        ]
+        with self._lock, self._connection:
+            self._connection.executemany(
+                "INSERT OR REPLACE INTO resources(kind, id, document) VALUES (?, ?, ?)",
+                documents,
+            )
 
     def list_samples(
         self,

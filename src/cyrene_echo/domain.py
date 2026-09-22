@@ -314,6 +314,14 @@ class CreateAnnotationRequest(ContractModel):
     note: str = Field(default="", max_length=2000)
 
 
+class ProductResourceRef(ContractModel):
+    """Product identity without imported business authority. | 外部产品资源身份。"""
+
+    uri: str = Field(pattern=r"^(cyrene|https?)://[^\s]+$", max_length=2000)
+    id: str = Field(min_length=1, max_length=512)
+    resource_version: int = Field(ge=1)
+
+
 class FeedbackSet(ContractModel):
     """User-selected training candidates anchored to one run. | 用户显式选择的训练候选集。"""
 
@@ -329,6 +337,18 @@ class FeedbackSet(ContractModel):
     created_at: datetime
     updated_at: datetime
     resource_version: int = Field(ge=1)
+
+
+class FeedbackHandoff(ContractModel):
+    """Durable internal acknowledgement of one Catalyst handoff. | 持久交接回执。"""
+
+    id: UUID
+    source_resource_version: int = Field(ge=1)
+    dataset_id: UUID | None = None
+    target_resource: ProductResourceRef
+    status: Literal["DRAFT", "PREPARED", "STARTED"]
+    open_in: str = Field(min_length=1, max_length=2000)
+    confirmed_at: datetime
 
 
 class CreateFeedbackSetRequest(ContractModel):
@@ -366,14 +386,6 @@ class TrainingCandidateRow(ContractModel):
     model_output: str | None = None
     evaluation_score: float | None = None
     human_annotation: dict[str, Any] | None = None
-
-
-class ProductResourceRef(ContractModel):
-    """Product identity without imported business authority. | 外部产品资源身份。"""
-
-    uri: str = Field(pattern=r"^(cyrene|https?)://[^\s]+$", max_length=2000)
-    id: str = Field(min_length=1, max_length=512)
-    resource_version: int = Field(ge=1)
 
 
 class ImportEvaluationInput(ContractModel):

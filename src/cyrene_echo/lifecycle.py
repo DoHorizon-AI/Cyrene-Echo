@@ -23,6 +23,8 @@ from cyrene_echo.domain import (
     CreateRunRequest,
     EvaluationInput,
     EvaluationRun,
+    FeedbackHandoff,
+    FeedbackHandoffStatus,
     ImportEvaluationInput,
     ProductResourceRef,
     utc_now,
@@ -184,14 +186,43 @@ class LifecycleActions:
             return run
 
     def send_feedback(self, identifier: UUID, command: SendFeedback) -> HandoffReceipt:
-        if self.catalyst_url is None:
-            raise EchoError(
-                code="ECHO_CATALYST_NOT_CONNECTED",
-                title="Catalyst unavailable",
-                detail="Configure the Catalyst Product URL before sending feedback.",
-                status=503,
-            )
         with self.lock:
+            feedback = self.service.get_feedback_set(identifier)
+            persisted = self.service.store.get_feedback_handoff(identifier)
+            if feedback.handoff_status == FeedbackHandoffStatus.HANDLED_OFF:
+                if persisted is None:
+                    raise EchoError(
+                        code="ECHO_CATALYST_RECEIPT_INVALID",
+                        title="Catalyst receipt missing",
+                        detail="The handled-off FeedbackSet has no durable target receipt.",
+                        status=500,
+                    )
+                if persisted.dataset_id != command.dataset_id:
+                    raise EchoError(
+                        code="ECHO_CATALYST_HANDOFF_CONFLICT",
+                        title="Catalyst handoff conflict",
+                        detail="The FeedbackSet was already sent with a different dataset target.",
+                        status=409,
+                    )
+                return HandoffReceipt(
+                    target_resource=persisted.target_resource,
+                    status=persisted.status,
+                    open_in=persisted.open_in,
+                )
+            if persisted is not None:
+                raise EchoError(
+                    code="ECHO_CATALYST_RECEIPT_INVALID",
+                    title="Catalyst receipt inconsistent",
+                    detail="The durable target receipt does not match the FeedbackSet state.",
+                    status=500,
+                )
+            if self.catalyst_url is None:
+                raise EchoError(
+                    code="ECHO_CATALYST_NOT_CONNECTED",
+                    title="Catalyst unavailable",
+                    detail="Configure the Catalyst Product URL before sending feedback.",
+                    status=503,
+                )
             feedback, payload = self.service.export_feedback_set(identifier)
             assert feedback.export_artifact is not None
             lineage = [f"cyrene://echo/evaluation-runs/{feedback.run_id}"]
@@ -224,15 +255,26 @@ class LifecycleActions:
                 response = self.client.post(
                     self.catalyst_url + "/api/v1/feedback-imports",
                     json=body,
-                    headers={"Idempotency-Key": "echo-feedback:" + str(identifier)},
+                    headers={
+                        "Idempotency-Key": (
+                            f"echo-feedback:{identifier}:{feedback.resource_version}"
+                        )
+                    },
                 )
+                if response.status_code != 201:
+                    raise ValueError("Catalyst feedback import did not return HTTP 201")
                 response.raise_for_status()
                 receipt = HandoffReceipt.model_validate(response.json())
-                if receipt.status not in {"DRAFT", "PREPARED", "STARTED"}:
-                    raise ValueError("unexpected target state")
-                if receipt.open_in.startswith("/"):
-                    receipt.open_in = self.catalyst_url + receipt.open_in
-                return receipt
+                target_id = str(UUID(receipt.target_resource.id))
+                expected_uri = f"cyrene://catalyst/preparations/{target_id}"
+                expected_path = f"/api/v1/preparations/{target_id}"
+                if (
+                    receipt.target_resource.id != target_id
+                    or receipt.target_resource.uri != expected_uri
+                    or receipt.open_in not in {expected_path, self.catalyst_url + expected_path}
+                ):
+                    raise ValueError("Catalyst returned a mismatched preparation identity")
+                receipt.open_in = self.catalyst_url + expected_path
             except (httpx.HTTPError, ValueError) as exc:
                 raise EchoError(
                     code="ECHO_CATALYST_HANDOFF_FAILED",
@@ -244,3 +286,21 @@ class LifecycleActions:
                     status=502,
                     retryable=True,
                 ) from exc
+            handled = feedback.model_copy(
+                update={
+                    "handoff_status": FeedbackHandoffStatus.HANDLED_OFF,
+                    "updated_at": utc_now(),
+                    "resource_version": feedback.resource_version + 1,
+                }
+            )
+            handoff = FeedbackHandoff(
+                id=identifier,
+                source_resource_version=feedback.resource_version,
+                dataset_id=command.dataset_id,
+                target_resource=receipt.target_resource,
+                status=receipt.status,
+                open_in=receipt.open_in,
+                confirmed_at=utc_now(),
+            )
+            self.service.store.save_feedback_handoff(handled, handoff)
+            return receipt
