@@ -1,31 +1,39 @@
 #!/usr/bin/env bash
 # Echo product boundary guard.
 #
-# Echo keeps its local ArtifactRef adapter and may call Products directly. It
-# must not regain a source checkout or runtime dependency on Platform.
+# Echo may use the pinned Platform Artifact SDK only inside its artifact
+# adapter. It must not regain a Platform source checkout, environment bridge,
+# or closed artifact taxonomy outside that adapter.
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$repo_root"
 
 status=0
-forbidden_patterns=(
-  'Cyrene-Platform\.git'
-  'cyrene[_-]artifacts'
-  'cy[_-]artifacts'
-  'CYRENE_PLATFORM'
-  'platform_artifacts'
-  'PlatformArtifactPlane'
-  'ArtifactKind\.(DATASET|MODEL|CHECKPOINT|TRAINING_SPEC|METRICS|MERGED|QUANTIZED|REPORT)'
-)
-for pattern in "${forbidden_patterns[@]}"; do
-  matches=$(git grep -n -E "$pattern" -- . ':(exclude)tooling/ci/check-boundary.sh' 2>/dev/null || true)
+guard_path='tooling/ci/check-boundary.sh'
+
+check_matches_outside() {
+  local label=$1
+  local pattern=$2
+  local allowed_paths=$3
+  local matches
+  matches=$(git grep -n -i -E "$pattern" -- ":!$guard_path" 2>/dev/null \
+    | grep -E -v "^(${allowed_paths}):" || true)
   if [ -n "$matches" ]; then
-    echo "FORBIDDEN Echo/Platform coupling or closed artifact taxonomy: $pattern"
+    echo "FORBIDDEN Echo boundary violation ($label):"
     echo "$matches" | sed 's/^/  - /'
     status=1
   fi
-done
+}
+
+check_matches_outside 'Platform git/source checkout' 'Cyrene-Platform[.]git' \
+  'pyproject[.]toml|uv[.]lock'
+check_matches_outside 'Platform artifact SDK/package' 'cyrene-artifacts|cy_artifacts' \
+  'pyproject[.]toml|uv[.]lock|src/cyrene_echo/engine[.]py'
+check_matches_outside 'Platform environment bridge' 'CYRENE_PLATFORM' '^$'
+check_matches_outside 'closed ArtifactKind code vocabulary' \
+  'ArtifactKind[[:space:]]*(::|[.])|class[[:space:]]+ArtifactKind|enum[[:space:]]+ArtifactKind' \
+  'src/cyrene_echo/engine[.]py'
 
 if ! python3 - <<'PY'
 import json
@@ -78,6 +86,6 @@ if [ -n "$pipeline_external_checkout" ]; then
 fi
 
 if [ "$status" -eq 0 ]; then
-  echo "OK: Echo has no Platform source/runtime coupling and ArtifactRef kind is open."
+  echo "OK: Echo limits the Platform Artifact SDK to its adapter and keeps ArtifactRef kind open."
 fi
 exit "$status"
