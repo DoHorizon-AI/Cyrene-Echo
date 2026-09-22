@@ -24,7 +24,8 @@ the model score and never overwrite it.
   held-out evaluation samples are never auto-exported as training data.
 - Catalyst-compatible JSONL export (`instruction` / `output` / `input` +
   provenance) published as a dataset `ArtifactRef`. Echo declares
-  `handoffStatus = PREPARED`; it does not push to Catalyst.
+  `handoffStatus = PREPARED` until the explicit Catalyst action returns a
+  verified preparation receipt, then persists `HANDLED_OFF`.
 - Isolated `ExchangeJudgePort` adapter that calls Exchange through the
   OpenAI-compatible `/v1/chat/completions` endpoint. Real judge acceptance is
   recorded as `WIRED_NOT_RUN` when credentials or an endpoint are unavailable;
@@ -44,8 +45,8 @@ the model score and never overwrite it.
 - `HumanAnnotation`: idempotent per `(runId, sampleIndex, reviewer)`; updating
   it does not mutate the `SampleRecord`.
 - `FeedbackSet`: `OPEN -> EXPORTED`. `handoffStatus` is `PREPARED` until an
-  external consumer (Catalyst) ingests the export; Echo never claims
-  delivery.
+  external consumer (Catalyst) confirms the export, then `HANDLED_OFF`.
+  Failed or malformed acknowledgements never advance the status.
 - Artifact bytes remain in the Artifact Plane. Echo persists input/report
   `ArtifactRef` values and their Product-visible provenance.
 - The reference adapter resolves provider-neutral `ArtifactRef` values inside
@@ -93,7 +94,10 @@ line is a `TrainingCandidateRow` with `instruction`, `output`, `input`, an
 optional `rejectedOutput` for preference pairs, and provenance
 (`sourceRunId`, `sourceSampleIndex`, `sourceKind`, `evaluator`, `modelRef`,
 `annotatedBy`). Catalyst ingests the same `ArtifactRef` shape via its
-`CreateDatasetVersionRequest`; the Catalyst `MappingConfig` consumes
-`instruction`/`output`/`input` and ignores provenance fields. Missing
-Catalyst fields should be requested explicitly rather than reinventing a
-global protocol.
+`FeedbackImportRequest`; the Catalyst `MappingConfig` consumes
+`instruction`/`output`/`input` and ignores provenance fields. Echo requires an
+HTTP 201 receipt whose target is exactly
+`cyrene://catalyst/preparations/{id}`, persists it atomically with the
+`HANDLED_OFF` transition, and returns that receipt on identical retries after
+restart. Missing Catalyst fields should be requested explicitly rather than
+reinventing a global protocol.

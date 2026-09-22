@@ -107,8 +107,10 @@ hands the `ArtifactRef` to Catalyst manually or invokes the explicit direct
 handoff `POST /api/v1/feedback-sets/{feedbackSetId}/actions/send-to-catalyst`.
 The handoff stays `PREPARED` until Catalyst confirms the target; unreachable or
 unconfirmed targets fail closed (`ECHO_CATALYST_NOT_CONNECTED`,
-`ECHO_CATALYST_HANDOFF_FAILED`). Held-out samples (those not in
-`sampleIndexes`) are never exported.
+`ECHO_CATALYST_HANDOFF_FAILED`). A valid HTTP 201 preparation receipt advances
+the FeedbackSet to `HANDLED_OFF` and is stored for idempotent replay, including
+after an Echo restart. Held-out samples (those not in `sampleIndexes`) are
+never exported.
 
 ## Model-judge path (`WIRED_NOT_RUN` against a real endpoint)
 
@@ -134,8 +136,8 @@ wired path, not live judge acceptance.
 | Deterministic exact-match evaluation | Real, tested. |
 | Per-sample results, human annotation, filtering | Real, tested. |
 | FeedbackSet export (Catalyst-compatible JSONL) | Real, tested. |
-| Honest handoff (`PREPARED`) | Real, tested. |
+| Honest handoff (`PREPARED -> HANDLED_OFF`) | Real, tested against a reachable local HTTP target. |
 | Exchange judge adapter wiring + test-double | Real, tested (test double only). |
 | Real judge acceptance (live Exchange + real model) | `WIRED_NOT_RUN`. |
-| Explicit Catalyst handoff (`actions/send-to-catalyst`) | `WIRED_NOT_RUN` without a reachable Catalyst; failures keep the export `PREPARED`. |
-| Catalyst ingestion of the exported `ArtifactRef` | `NOT_RUN` (Echo does not write Catalyst state; Catalyst owns ingestion). |
+| Explicit Catalyst handoff (`actions/send-to-catalyst`) | Adapter, receipt validation, persistence, and restart replay are tested locally; deployed Catalyst acceptance remains `WIRED_NOT_RUN`. |
+| Catalyst ingestion of the exported `ArtifactRef` | Owner-confirmed receipt is required; Echo does not write Catalyst state or claim publication. |

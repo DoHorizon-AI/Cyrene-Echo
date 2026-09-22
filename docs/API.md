@@ -31,8 +31,8 @@ exact-match implementation are owned by `Cyrene-Plugins-Official`.
 `ArtifactRef` is a provider-neutral wire shape shared across Product handoffs.
 It carries immutable content identity; its `kind` is an opaque producer-owned
 string. Echo applies its own `dataset` check only where an evaluation input
-requires a dataset. Echo's local adapter implements this shape without a
-Platform SDK dependency.
+requires a dataset. Echo consumes the pinned Platform artifact SDK for local
+content-addressed storage without importing Platform business authority.
 
 ## Runner profiles
 
@@ -77,8 +77,11 @@ reference to Catalyst through
 `POST /api/v1/feedback-sets/{feedbackSetId}/actions/send-to-catalyst`. Without
 a configured Catalyst URL the handoff fails closed with
 `ECHO_CATALYST_NOT_CONNECTED`; an unreachable or unconfirmed target fails with
-`ECHO_CATALYST_HANDOFF_FAILED` and the export stays `PREPARED`. Echo does not
-write Catalyst state or claim DatasetVersion publication.
+`ECHO_CATALYST_HANDOFF_FAILED` and the export stays `PREPARED`. Echo accepts
+only Catalyst's HTTP 201 creation receipt with an exact preparation identity.
+It then atomically stores that receipt, advances the export to `HANDLED_OFF`,
+and replays it across process restarts without another downstream request.
+Echo does not write Catalyst state or claim DatasetVersion publication.
 
 The `ExchangeJudgePort` calls the configured Exchange OpenAI-compatible chat
 endpoint directly. A live Exchange judge requires a bearer credential and a
@@ -96,7 +99,8 @@ failures and HTTP rejections persist a `FAILED` run with
 | Runner binding profiles | `REFERENCE_MVP_READY` | Declared bindings with fail-closed resolution tests |
 | Catalyst feedback export | `REFERENCE_MVP_READY` | Explicit selection and immutable JSONL export tests |
 | Exchange judge adapter | `WIRED_NOT_RUN` for real endpoint | Adapter tests use a local stdlib HTTP double |
-| Live Catalyst handoff | `WIRED_NOT_RUN` without a reachable Catalyst | Direct Product call; unconfirmed targets are never reported as delivered |
+| Catalyst handoff adapter | `LOCAL_ENDPOINT_VERIFIED` | Reachable HTTP target, strict owner receipt, fail-closed and restart replay tests |
+| Live deployed Catalyst handoff | `WIRED_NOT_RUN` without a deployed target | Production connectivity and availability remain deployment evidence |
 | Reusable runner contract | `DIRECT_RUNTIME_IMPLEMENTED` | Plugins-owned `evaluation.runner.v1`; production deployment remains separate |
 
 The HTTP API is rooted at `/api/v1`, uses OpenAPI 3.1.2 and JSON Schema Draft

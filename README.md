@@ -32,7 +32,9 @@ and evaluation business payloads never traverse a Platform service.
 The exact-match Plugin and Echo adapter have real local DirectPluginRuntime
 endpoint coverage. This is not production deployment evidence. The live
 Exchange judge path remains `WIRED_NOT_RUN` without a reachable endpoint and
-credential; test doubles are never reported as live judge acceptance.
+credential; test doubles are never reported as live judge acceptance. A
+confirmed Catalyst handoff is persisted as `HANDLED_OFF`, and identical
+replays return the durable target receipt without a second downstream call.
 
 This repository is prepared for public-source publication, but the hosting
 visibility switch is an explicit owner operation. Check
