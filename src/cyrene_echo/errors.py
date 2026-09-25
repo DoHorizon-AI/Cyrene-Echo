@@ -39,6 +39,7 @@ class EvaluationEngineFailure(RuntimeError):
 
 # ════════════════════════════════════════════════════════════════════════
 # Canonical Cyrene Echo Error Catalog & Mappings
+# Cyrene Echo 标准错误目录与映射
 # ════════════════════════════════════════════════════════════════════════
 ECHO_ERROR_MAPPINGS: dict[str, dict[str, str]] = {
     "ECHO_REQUEST_INVALID": {
@@ -180,7 +181,8 @@ ECHO_ERROR_MAPPINGS: dict[str, dict[str, str]] = {
 
 
 def map_echo_error(raw_code: str) -> dict[str, str]:
-    """Map a raw or legacy Echo error code to canonical PRODUCT.ECHO.<REASON>."""
+    """Map a raw or legacy Echo error code to canonical PRODUCT.ECHO.<REASON>.
+    中文：将原始或旧版 Echo 错误码映射为规范的 PRODUCT.ECHO.<REASON>。"""
     if raw_code in ECHO_ERROR_MAPPINGS:
         return ECHO_ERROR_MAPPINGS[raw_code]
     normalized = raw_code.upper().replace(" ", "_")

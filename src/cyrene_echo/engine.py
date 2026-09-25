@@ -79,6 +79,7 @@ class RunnerAcceptance(StrEnum):
     LOCAL_ENDPOINT_VERIFIED = "LOCAL_ENDPOINT_VERIFIED"
     WIRED_NOT_RUN = "WIRED_NOT_RUN"
     # Test doubles only. MOCK is never a selectable runtime binding.
+    # 中文:仅用于测试的替身。MOCK 绝不会成为可选的运行时 binding。
     MOCK = "MOCK"
 
 
