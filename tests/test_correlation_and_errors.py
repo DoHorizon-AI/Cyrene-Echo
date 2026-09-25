@@ -2,9 +2,9 @@
 Tests for Echo W3C trace correlation, secret redaction, structured logging,
 and canonical error code mappings.
 
-中文：测试 Echo 的 W3C trace 关联、敏感信息脱敏、结构化日志和规范错误码映射。
+中文:测试 Echo 的 W3C trace 关联、敏感信息脱敏、结构化日志和规范错误码映射。
 """
-# 中文：测试 Echo 的 W3C trace 关联、密钥脱敏、结构化日志和规范错误代码映射。
+# 中文:测试 Echo 的 W3C trace 关联、密钥脱敏、结构化日志和规范错误代码映射。
 
 from __future__ import annotations
 
@@ -158,7 +158,7 @@ def test_echo_error_mappings() -> None:
         assert mapped["recovery_action"] == expected["recovery_action"]
 
     # Unknown code fallback
-    # 中文：未知代码的回退处理。
+    # 中文:未知代码的回退处理。
     fallback = map_echo_error("ECHO_CUSTOM_REASON")
     assert fallback["code"] == "PRODUCT.ECHO.CUSTOM_REASON"
     assert fallback["cause_kind"] == "unknown"
@@ -173,7 +173,7 @@ def test_api_traceparent_propagation_and_problem_details(tmp_path: Path) -> None
     client = TestClient(app)
 
     # 1. Custom incoming traceparent and request_id
-    # 中文：1. 自定义传入的 traceparent 和 request_id。
+    # 中文:1. 自定义传入的 traceparent 和 request_id。
     incoming_trace_id = "4bf92f3577b34da6a3ce929d0e0e4736"
     incoming_span_id = "00f067aa0ba902b7"
     incoming_traceparent = f"00-{incoming_trace_id}-{incoming_span_id}-01"
@@ -205,6 +205,6 @@ def test_api_traceparent_propagation_and_problem_details(tmp_path: Path) -> None
     assert "https://errors.cyrene.dev/echo/product.echo.suite_not_found" in body["type"]
 
     # Verify diagnostic error on stderr
-    # 中文：验证诊断错误是否已输出到 stderr。
+    # 中文:验证诊断错误是否已输出到 stderr。
     log_output = buffer.getvalue()
     assert "PRODUCT.ECHO.SUITE_NOT_FOUND" in log_output

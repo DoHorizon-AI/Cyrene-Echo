@@ -31,9 +31,9 @@ EVALUATION_RUNNER_CONNECTION_ENV = "CYRENE_EVALUATION_RUNNER_CONNECTION_REF"
 class _DirectPayload:
     """Minimal direct payload shape accepted by the shared runtime client.
 
-    中文：共享 runtime client 接受的最小 Direct Plugin payload 结构。
+    中文:共享 runtime client 接受的最小 Direct Plugin payload 结构。
     """
-# 中文：共享运行时客户端接受的最小直传负载形状。
+# 中文:共享运行时客户端接受的最小直传负载形状。
 
     type_url: str
     value: bytes
@@ -42,9 +42,9 @@ class _DirectPayload:
 class DirectPluginEvaluationPort:
     """Invoke one resolved ``evaluation.runner.v1`` endpoint.
 
-    中文：调用一个已解析的 evaluation.runner.v1 endpoint。
+    中文:调用一个已解析的 evaluation.runner.v1 endpoint。
     """
-# 中文：调用一个已解析的 ``evaluation.runner.v1`` 端点。
+# 中文:调用一个已解析的 ``evaluation.runner.v1`` 端点。
 
     def __init__(
         self,
@@ -64,9 +64,9 @@ class DirectPluginEvaluationPort:
     ) -> EngineEvaluation:
         """Read Product-owned input and map one typed Plugin measurement.
 
-        中文：读取 Product 自有输入并映射一条类型化 Plugin measurement。
+        中文:读取 Product 自有输入并映射一条类型化 Plugin measurement。
         """
-    # 中文：读取 Product 所有的输入并映射一项类型化 Plugin 测量值。
+    # 中文:读取 Product 所有的输入并映射一项类型化 Plugin 测量值。
 
         records = _read_jsonl(source)
         response = self._invoke(
@@ -132,9 +132,9 @@ class DirectPluginEvaluationPort:
 class UnavailableEvaluationPort:
     """Fail closed when the required Plugin endpoint is not configured.
 
-    中文：缺少必需的 Plugin endpoint 时应 fail closed。
+    中文:缺少必需的 Plugin endpoint 时应 fail closed。
     """
-# 中文：必需 Plugin 端点未配置时按 fail-closed 处理。
+# 中文:必需 Plugin 端点未配置时按 fail-closed 处理。
 
     def __init__(self, reason: str) -> None:
         self._reason = reason
@@ -152,9 +152,9 @@ class UnavailableEvaluationPort:
 def evaluation_port_from_environment() -> DirectPluginEvaluationPort | UnavailableEvaluationPort:
     """Build the default fail-closed Product adapter from an opaque endpoint ref.
 
-    中文：根据不透明 endpoint 引用构建默认的 fail-closed Product adapter。
+    中文:根据不透明 endpoint 引用构建默认的 fail-closed Product adapter。
     """
-# 中文：根据不透明端点引用构建默认的 fail-closed Product 适配器。
+# 中文:根据不透明端点引用构建默认的 fail-closed Product 适配器。
 
     connection_ref = os.environ.get(EVALUATION_RUNNER_CONNECTION_ENV, "").strip()
     if not connection_ref:

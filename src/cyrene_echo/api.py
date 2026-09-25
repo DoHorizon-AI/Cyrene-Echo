@@ -274,7 +274,7 @@ def create_app(
     # ────────────────────────────────────────────────────────────────
     # SECTION: Minimal session-feedback interface (HTML)
     # ────────────────────────────────────────────────────────────────
-    # 中文：最小会话反馈接口（HTML）。
+    # 中文:最小会话反馈接口(HTML)。
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     def index_page() -> str:
         """Serve the minimal sample-list / score / filter / export page. | 最小界面。"""
@@ -284,7 +284,7 @@ def create_app(
     # ────────────────────────────────────────────────────────────────
     # SECTION: EvaluationSuite + JudgeProfile
     # ────────────────────────────────────────────────────────────────
-    # 中文：EvaluationSuite 与 JudgeProfile。
+    # 中文:EvaluationSuite 与 JudgeProfile。
     @app.post(
         "/api/v1/evaluation-suites",
         response_model=EvaluationSuite,
@@ -326,7 +326,7 @@ def create_app(
     # ────────────────────────────────────────────────────────────────
     # SECTION: Session import + EvaluationRun execution
     # ────────────────────────────────────────────────────────────────
-    # 中文：会话导入与 EvaluationRun 执行。
+    # 中文:会话导入与 EvaluationRun 执行。
     @app.post(
         "/api/v1/session-artifacts",
         response_model=ArtifactRef,
@@ -368,7 +368,7 @@ def create_app(
     # ────────────────────────────────────────────────────────────────
     # SECTION: Per-sample review, human annotation, filtering
     # ────────────────────────────────────────────────────────────────
-    # 中文：逐样本审核、人工标注与筛选。
+    # 中文:逐样本审核、人工标注与筛选。
     @app.get(
         "/api/v1/evaluation-runs/{runId}/samples",
         response_model=list[SampleRecord],
@@ -421,7 +421,7 @@ def create_app(
     # ────────────────────────────────────────────────────────────────
     # SECTION: FeedbackSet + Catalyst-compatible export
     # ────────────────────────────────────────────────────────────────
-    # 中文：FeedbackSet 与 Catalyst 兼容导出。
+    # 中文:FeedbackSet 与 Catalyst 兼容导出。
     @app.post(
         "/api/v1/feedback-sets",
         response_model=FeedbackSet,
