@@ -18,7 +18,7 @@ def pytest_configure() -> None:
 
     中文:通过 Direct endpoint 启动 canonical evaluation.runner.v1 package。
     """
-# 中文:通过直连端点启动规范的 evaluation.runner.v1 包。
+    # 中文:通过直连端点启动规范的 evaluation.runner.v1 包。
 
     try:
         from cyrene_plugin_runtime import serve
@@ -43,7 +43,7 @@ def pytest_unconfigure() -> None:
 
     中文:在测试会话结束后停止 canonical Plugin endpoint。
     """
-# 中文:测试会话结束后停止规范 Plugin 端点。
+    # 中文:测试会话结束后停止规范 Plugin 端点。
 
     os.environ.pop(_CONNECTION_ENV, None)
     for server in _SERVERS:

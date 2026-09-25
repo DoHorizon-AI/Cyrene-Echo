@@ -33,7 +33,8 @@ class _DirectPayload:
 
     中文:共享 runtime client 接受的最小 Direct Plugin payload 结构。
     """
-# 中文:共享运行时客户端接受的最小直传负载形状。
+
+    # 中文:共享运行时客户端接受的最小直传负载形状。
 
     type_url: str
     value: bytes
@@ -44,7 +45,8 @@ class DirectPluginEvaluationPort:
 
     中文:调用一个已解析的 evaluation.runner.v1 endpoint。
     """
-# 中文:调用一个已解析的 ``evaluation.runner.v1`` 端点。
+
+    # 中文:调用一个已解析的 ``evaluation.runner.v1`` 端点。
 
     def __init__(
         self,
@@ -66,7 +68,7 @@ class DirectPluginEvaluationPort:
 
         中文:读取 Product 自有输入并映射一条类型化 Plugin measurement。
         """
-    # 中文:读取 Product 所有的输入并映射一项类型化 Plugin 测量值。
+        # 中文:读取 Product 所有的输入并映射一项类型化 Plugin 测量值。
 
         records = _read_jsonl(source)
         response = self._invoke(
@@ -134,7 +136,8 @@ class UnavailableEvaluationPort:
 
     中文:缺少必需的 Plugin endpoint 时应 fail closed。
     """
-# 中文:必需 Plugin 端点未配置时按 fail-closed 处理。
+
+    # 中文:必需 Plugin 端点未配置时按 fail-closed 处理。
 
     def __init__(self, reason: str) -> None:
         self._reason = reason
@@ -154,7 +157,7 @@ def evaluation_port_from_environment() -> DirectPluginEvaluationPort | Unavailab
 
     中文:根据不透明 endpoint 引用构建默认的 fail-closed Product adapter。
     """
-# 中文:根据不透明端点引用构建默认的 fail-closed Product 适配器。
+    # 中文:根据不透明端点引用构建默认的 fail-closed Product 适配器。
 
     connection_ref = os.environ.get(EVALUATION_RUNNER_CONNECTION_ENV, "").strip()
     if not connection_ref:

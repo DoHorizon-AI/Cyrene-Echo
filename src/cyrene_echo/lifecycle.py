@@ -54,7 +54,8 @@ class SendFeedback(ContractModel):
 
     中文:可选地为所选 Catalyst Dataset 准备下一版本。
     """
-# 中文:可选地为所选 Catalyst Dataset 准备下一个版本。
+
+    # 中文:可选地为所选 Catalyst Dataset 准备下一个版本。
 
     dataset_id: UUID | None = None
 
@@ -64,7 +65,8 @@ class LifecycleActions:
 
     中文:负责评估所需的数据准备,同时由 source 保留 session 历史。
     """
-# 中文:由 Echo 拥有评估准备流程,同时由来源 Product 保留会话历史。
+
+    # 中文:由 Echo 拥有评估准备流程,同时由来源 Product 保留会话历史。
 
     def __init__(
         self, service: EchoService, catalyst_url: str | None, client: httpx.Client | None = None

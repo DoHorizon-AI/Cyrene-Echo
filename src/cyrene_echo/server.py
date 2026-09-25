@@ -28,7 +28,7 @@ def _validated_serve_arguments(parser: argparse.ArgumentParser, args: argparse.N
 
     中文:拒绝 operator 实际无法运行的 listener 或数据库。
     """
-# 中文:拒绝操作员无法实际提供服务的监听器或数据库。
+    # 中文:拒绝操作员无法实际提供服务的监听器或数据库。
 
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
@@ -44,7 +44,7 @@ def _run_show(args: argparse.Namespace) -> int:
 
     中文:输出已持久化的 EvaluationRun 及其 gate 判定。
     """
-# 中文:打印一条已持久化的 EvaluationRun 及其 gate 决策。
+    # 中文:打印一条已持久化的 EvaluationRun 及其 gate 决策。
 
     store = EchoStore(args.database.expanduser().resolve())
     try:
