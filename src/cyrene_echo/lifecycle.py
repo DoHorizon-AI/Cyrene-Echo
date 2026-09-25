@@ -50,13 +50,21 @@ class EvaluateInput(ContractModel):
 
 
 class SendFeedback(ContractModel):
-    """Optionally prepare the next version of a selected Catalyst Dataset."""
+    """Optionally prepare the next version of a selected Catalyst Dataset.
+
+    中文：可选地为所选 Catalyst Dataset 准备下一版本。
+    """
+# 中文：可选地为所选 Catalyst Dataset 准备下一个版本。
 
     dataset_id: UUID | None = None
 
 
 class LifecycleActions:
-    """Own evaluation preparation, while the source retains session history."""
+    """Own evaluation preparation, while the source retains session history.
+
+    中文：负责评估所需的数据准备，同时由 source 保留 session 历史。
+    """
+# 中文：由 Echo 拥有评估准备流程，同时由来源 Product 保留会话历史。
 
     def __init__(
         self, service: EchoService, catalyst_url: str | None, client: httpx.Client | None = None
@@ -77,6 +85,7 @@ class LifecycleActions:
             )
         # Artifact kind is a producer-owned category, so the snapshot is accepted
         # on its declared format and verified content instead of a shared vocabulary.
+        # 中文：Artifact kind 是由生产方拥有的类别，因此依据声明的格式和已验证内容接受快照，而不是使用共享词汇表。
         self._rows(command.artifact)
         identifier = uuid4()
         digest = hashlib.sha256(command.model_dump_json().encode()).hexdigest()

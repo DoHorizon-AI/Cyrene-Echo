@@ -79,6 +79,7 @@ class EchoService:
     # ──────────────────────────────────────────────────────────────────
     # SECTION: EvaluationSuite + JudgeProfile lifecycle
     # ──────────────────────────────────────────────────────────────────
+    # 中文：EvaluationSuite 与 JudgeProfile 生命周期。
 
     def create_suite(
         self, command: CreateSuiteRequest, idempotency_key: str | None
@@ -187,6 +188,7 @@ class EchoService:
     # ──────────────────────────────────────────────────────────────────
     # SECTION: Session import + EvaluationRun execution
     # ──────────────────────────────────────────────────────────────────
+    # 中文：会话导入与 EvaluationRun 执行。
 
     def import_sessions(self, payload: bytes) -> ArtifactRef:
         """Publish raw session JSONL bytes as an immutable dataset artifact. | 导入会话。"""
@@ -413,6 +415,7 @@ class EchoService:
     # ──────────────────────────────────────────────────────────────────
     # SECTION: Per-sample review, human annotation, filtering
     # ──────────────────────────────────────────────────────────────────
+    # 中文：逐样本审核、人工标注与筛选。
 
     def list_samples(
         self,
@@ -512,6 +515,7 @@ class EchoService:
     # ──────────────────────────────────────────────────────────────────
     # SECTION: FeedbackSet + Catalyst-compatible export
     # ──────────────────────────────────────────────────────────────────
+    # 中文：FeedbackSet 与 Catalyst 兼容导出。
 
     def create_feedback_set(
         self, command: CreateFeedbackSetRequest, idempotency_key: str | None
@@ -614,6 +618,7 @@ class EchoService:
         feedback_set = self.get_feedback_set(feedback_set_id)
         if feedback_set.export_artifact is not None:
             # A selected export is immutable; later annotations need a new FeedbackSet.
+            # 中文：选定的导出不可变；后续标注必须创建新的 FeedbackSet。
             return feedback_set, self.artifacts.resolve(feedback_set.export_artifact).read_bytes()
         run = self.get_run(feedback_set.run_id)
         suite = self.get_suite(run.suite_id)

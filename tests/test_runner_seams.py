@@ -192,6 +192,7 @@ class _CatalystDouble(BaseHTTPRequestHandler):
 # ════════════════════════════════════════════════════════════════════
 # SECTION: Runner profile and binding declarations
 # ════════════════════════════════════════════════════════════════════
+# 中文：Runner 配置文件与 binding 声明。
 def test_runner_bindings_are_explicit_and_mock_is_not_selectable() -> None:
     """Bindings declare owner profiles and grading; mocks stay test-only. | 绑定分级。"""
 
@@ -210,6 +211,7 @@ def test_runner_bindings_are_explicit_and_mock_is_not_selectable() -> None:
     )
     assert RunnerAcceptance.MOCK not in {binding.acceptance for binding in RUNNER_BINDINGS.values()}
     # Binding ids are Echo-local names; no fabricated capability id is selectable.
+    # 中文：Binding ID 是 Echo 本地名称；伪造的 capability ID 不可选用。
     assert all(not binding_id.startswith("evaluation.") for binding_id in RUNNER_BINDINGS)
     assert resolve_runner_binding("exchange-judge") is remote
 
@@ -313,6 +315,7 @@ def test_runner_binding_must_match_suite_evaluator(tmp_path: Path) -> None:
 # ════════════════════════════════════════════════════════════════════
 # SECTION: Exchange judge fail-closed
 # ════════════════════════════════════════════════════════════════════
+# 中文：Exchange judge 的 fail-closed 行为。
 def test_exchange_judge_unreachable_endpoint_fails_closed(tmp_path: Path) -> None:
     """A configured judge endpoint that is down must not fabricate scores. | 不可达判官。"""
 
@@ -377,6 +380,7 @@ def test_exchange_judge_rejection_fails_closed(tmp_path: Path) -> None:
 # ════════════════════════════════════════════════════════════════════
 # SECTION: Catalyst feedback handoff fail-closed
 # ════════════════════════════════════════════════════════════════════
+# 中文：Catalyst 反馈交接的 fail-closed 行为。
 def test_catalyst_handoff_requires_configured_endpoint(tmp_path: Path) -> None:
     """Without a configured Catalyst URL the handoff fails closed. | 未配置端点。"""
 
