@@ -85,7 +85,8 @@ class LifecycleActions:
             )
         # Artifact kind is a producer-owned category, so the snapshot is accepted
         # on its declared format and verified content instead of a shared vocabulary.
-        # 中文:Artifact kind 是由生产方拥有的类别,因此依据声明的格式和已验证内容接受快照,而不是使用共享词汇表。
+        # 中文：Artifact kind 是由生产方拥有的类别,因此依据声明的格式和已验证内容接受快照,
+        # 而不是使用共享词汇表。
         self._rows(command.artifact)
         identifier = uuid4()
         digest = hashlib.sha256(command.model_dump_json().encode()).hexdigest()
