@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
@@ -34,6 +35,7 @@ from cyrene_echo.domain import (
     UsageFacts,
 )
 from cyrene_echo.errors import EchoError, EvaluationEngineFailure
+from cyrene_echo.logging import format_cyrene_log
 
 
 def sha256_file(path: Path) -> str:
@@ -320,7 +322,21 @@ def _extract_usage(payload: dict[str, Any]) -> UsageFacts | None:
             completion_tokens=completion,
             total_tokens=total,
         )
-    except ValueError:
+    except ValueError as exc:
+        sys.stderr.write(
+            format_cyrene_log(
+                level="WARN",
+                event_name="echo.engine.invalid_usage_facts",
+                message="Failed to instantiate UsageFacts from raw values",
+                attributes={
+                    "cause": str(exc),
+                    "prompt": prompt,
+                    "completion": completion,
+                    "total": total,
+                },
+            )
+            + "\n"
+        )
         return None
 
 
