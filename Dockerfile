@@ -63,6 +63,6 @@ USER cyrene
 EXPOSE 8094
 
 HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
-  CMD curl -f http://127.0.0.1:8094/ || exit 1
+  CMD curl -f http://127.0.0.1:8094/healthz || exit 1
 
 ENTRYPOINT ["docker-entrypoint.sh"]
