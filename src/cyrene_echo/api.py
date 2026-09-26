@@ -57,6 +57,10 @@ from cyrene_echo.plugin_evaluation import evaluation_port_from_environment
 from cyrene_echo.service import EchoService
 from cyrene_echo.store import EchoStore
 from cyrene_echo.ui_page import INDEX_HTML
+from cyrene_echo.workspace_auth import (
+    WorkspaceServiceAuthenticator,
+    WorkspaceServicePrincipal,
+)
 
 
 def create_app(
@@ -66,6 +70,7 @@ def create_app(
     engine: EvaluationExecutionPort | None = None,
     judge_bearer_token: str | None = None,
     catalyst_url: str | None = None,
+    workspace_authenticator: WorkspaceServiceAuthenticator | None = None,
 ) -> FastAPI:
     """Build Echo with explicit persistence and evaluator adapters. | 创建 Echo 应用。"""
 
@@ -79,6 +84,9 @@ def create_app(
     app = FastAPI(title="Cyrene Echo Product API", version="1.0.0")
     app.state.echo_store = store
     app.state.echo_service = service
+    app.state.workspace_authenticator = (
+        workspace_authenticator or WorkspaceServiceAuthenticator.from_json(None)
+    )
     lifecycle = LifecycleActions(service, catalyst_url)
     app.state.echo_lifecycle = lifecycle
 
@@ -153,7 +161,55 @@ def create_app(
         request.state.span_id = span_id
         request.state.request_id = request_id
 
-        response = await call_next(request)
+        response: Response
+        private_collection = "/internal/workspace/v1/evaluation-suites"
+        private_route = request.url.path == private_collection or request.url.path.startswith(
+            private_collection + "/"
+        )
+        if private_route and request.method in {"GET", "POST"}:
+            authenticator: WorkspaceServiceAuthenticator = app.state.workspace_authenticator
+            principal = authenticator.authenticate(request.headers.get("authorization"))
+            if not authenticator.configured or principal is None:
+                status = 503 if not authenticator.configured else 401
+                code = (
+                    "ECHO_WORKSPACE_AUTH_UNAVAILABLE"
+                    if status == 503
+                    else "ECHO_WORKSPACE_AUTHENTICATION_REQUIRED"
+                )
+                title = (
+                    "Workspace service authentication unavailable"
+                    if status == 503
+                    else "Workspace service authentication required"
+                )
+                detail = (
+                    "Workspace service credentials are not configured."
+                    if status == 503
+                    else "A valid Workspace service bearer token is required."
+                )
+                canonical_code = map_echo_error(code)["code"]
+                problem = ProblemDetails(
+                    type=f"https://errors.cyrene.dev/echo/{canonical_code.lower()}",
+                    title=title,
+                    status=status,
+                    detail=detail,
+                    instance=request.url.path,
+                    code=code,
+                    retryable=status == 503,
+                    trace_id=trace_id,
+                    request_id=request_id,
+                )
+                response = JSONResponse(
+                    status_code=status,
+                    content=problem.model_dump(by_alias=True, exclude_none=True, mode="json"),
+                    media_type="application/problem+json",
+                )
+                if status == 401:
+                    response.headers["WWW-Authenticate"] = "Bearer"
+            else:
+                request.state.workspace_service_principal = principal
+                response = await call_next(request)
+        else:
+            response = await call_next(request)
         response.headers["traceparent"] = f"00-{trace_id}-{span_id}-01"
         response.headers["x-request-id"] = request_id
         return response
@@ -303,9 +359,40 @@ def create_app(
     ) -> EvaluationSuite:
         return service.create_suite(command, idempotency_key)
 
+    @app.post(
+        "/internal/workspace/v1/evaluation-suites",
+        response_model=EvaluationSuite,
+        response_model_exclude_none=True,
+        status_code=201,
+        include_in_schema=False,
+    )
+    def create_workspace_suite(
+        request: Request,
+        command: CreateSuiteRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=200),
+    ) -> EvaluationSuite:
+        principal = request.state.workspace_service_principal
+        if not isinstance(principal, WorkspaceServicePrincipal):
+            raise RuntimeError("Workspace service principal missing after route authentication")
+        return service.create_workspace_suite(command, idempotency_key, principal)
+
     @app.get("/api/v1/evaluation-suites/{suiteId}", response_model=EvaluationSuite)
     def get_suite(suite_id: Annotated[UUID, ApiPath(alias="suiteId")]) -> EvaluationSuite:
         return service.get_suite(suite_id)
+
+    @app.get(
+        "/internal/workspace/v1/evaluation-suites/{suiteId}",
+        response_model=EvaluationSuite,
+        include_in_schema=False,
+    )
+    def get_workspace_suite(
+        request: Request,
+        suite_id: Annotated[UUID, ApiPath(alias="suiteId")],
+    ) -> EvaluationSuite:
+        principal = request.state.workspace_service_principal
+        if not isinstance(principal, WorkspaceServicePrincipal):
+            raise RuntimeError("Workspace service principal missing after route authentication")
+        return service.get_workspace_suite(suite_id, principal)
 
     @app.post(
         "/api/v1/judge-profiles",

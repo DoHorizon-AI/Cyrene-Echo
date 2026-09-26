@@ -105,6 +105,28 @@ failures and HTTP rejections persist a `FAILED` run with
 
 The HTTP API is rooted at `/api/v1`, uses OpenAPI 3.1.2 and JSON Schema Draft
 2020-12, and returns RFC 9457-compatible Product errors.
+
+## Private Workspace service API
+
+The private `/internal/workspace/v1/evaluation-suites` routes create and read
+EvaluationSuites using the organization and Workspace bound to the presented
+service token. The server loads only SHA-256 token digests and fixed scope
+identifiers from deployment-injected `CYRENE_WORKSPACE_SERVICE_AUTH_JSON`;
+request bodies and caller actor headers cannot select a scope. Invalid
+configuration prevents server startup, while missing configuration leaves
+private routes unavailable with HTTP 503.
+
+New private suites are visible only to the matching private token. Existing
+suites stay unscoped and remain visible through legacy `/api/v1` reads only.
+Legacy run creation and reads of runs, results, gates, samples, annotations,
+and feedback resolve the parent suite before returning data, preventing
+unscoped child rows from bypassing the suite boundary. Private suite creation
+rejects any `judgeProfileId` because JudgeProfile has no trusted Workspace
+scope in this integration. Broader private run and profile operations remain
+outside this API. The private contract is kept separately at
+[`workspace-internal.openapi.yaml`](../contracts/product/v1/workspace-internal.openapi.yaml).
+The deployed secret binding and caller scope map still require deployment and
+caller-audit evidence.
 ---
 <!-- Chinese Translation / 中文翻译 -->
 
@@ -172,3 +194,19 @@ Echo 读取 Navigator 或其他 Product 提供的来源引用，并在本地解�
 | 可复用 runner 契约 | `DIRECT_RUNTIME_IMPLEMENTED` | Plugins 所有的 `evaluation.runner.v1`；生产部署另行验收 |
 
 HTTP API 根路径为 `/api/v1`，使用 OpenAPI 3.1.2 和 JSON Schema Draft 2020-12，并返回兼容 RFC 9457 的 Product 错误。
+
+## 私有 Workspace 服务 API
+
+私有 `/internal/workspace/v1/evaluation-suites` 路由依据服务 token 绑定的组织
+和 Workspace 创建及读取 EvaluationSuite。服务端从部署注入的
+`CYRENE_WORKSPACE_SERVICE_AUTH_JSON` 加载 SHA-256 token 摘要和固定 scope 标识；
+请求正文与调用方 actor header 均不能选择 scope。配置无效会阻止服务启动；
+缺少配置时私有路由返回 HTTP 503。
+
+新私有 suite 仅对匹配的私有 token 可见。既有 suite 保持无 scope，并且只可经旧
+`/api/v1` 读取。旧 run 创建以及 run、result、gate、sample、annotation 和 feedback
+读取都会先解析父 suite，防止无 scope 的子行绕过 suite 边界。由于 JudgeProfile
+尚无可信 Workspace scope，私有 suite 创建会拒绝任何 `judgeProfileId`。私有
+run 和 profile 操作暂不属于本 API。私有契约单独保存在
+[`workspace-internal.openapi.yaml`](../contracts/product/v1/workspace-internal.openapi.yaml)。
+部署 secret 绑定和调用方 scope map 仍需部署及 caller-audit 证据。

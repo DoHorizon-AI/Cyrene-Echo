@@ -19,6 +19,10 @@ import uvicorn
 
 from cyrene_echo.api import create_app
 from cyrene_echo.store import EchoStore
+from cyrene_echo.workspace_auth import (
+    WorkspaceServiceAuthConfigError,
+    WorkspaceServiceAuthenticator,
+)
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
@@ -95,11 +99,18 @@ def main() -> None:
     token = os.environ.get(args.judge_token_env) if args.judge_token_env else None
     if args.judge_token_env and not token:
         parser_instance.error("The configured judge credential variable is empty")
+    try:
+        workspace_authenticator = WorkspaceServiceAuthenticator.from_json(
+            os.environ.get("CYRENE_WORKSPACE_SERVICE_AUTH_JSON")
+        )
+    except WorkspaceServiceAuthConfigError as exc:
+        parser_instance.error(str(exc))
     app = create_app(
         database_path=args.database,
         artifact_root=args.artifact_root,
         catalyst_url=args.catalyst_url,
         judge_bearer_token=token,
+        workspace_authenticator=workspace_authenticator,
     )
     uvicorn.run(app, host=args.host, port=args.port, access_log=False)
 

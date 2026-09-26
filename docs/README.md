@@ -36,6 +36,7 @@ pull request 引用、tag 或 reflog。完整开发历史仅保留在私有恢�
 | [`glossary.md`](glossary.md) | Bilingual evaluation vocabulary / 双语评估术语 |
 | [`faq.md`](faq.md) | Common questions and troubleshooting / 常见问题与排障指南 |
 | [`API.md`](API.md) | Product API, runner profiles, and contract status / 产品 API、运行器配置档与契约状态 |
+| [`../contracts/product/v1/workspace-internal.openapi.yaml`](../contracts/product/v1/workspace-internal.openapi.yaml) | Private, token-scoped Workspace service API / 私有 token scope Workspace 服务 API |
 | [`REPOSITORY-LIFECYCLE.md`](REPOSITORY-LIFECYCLE.md) | Lifecycle, governance, clean-root, and release boundaries / 生命周期、治理、clean-root 与发布边界 |
 | [`PUBLICATION.md`](PUBLICATION.md) | Public-source target, evidence boundary, and blockers / 公开源码目标、证据边界与阻塞项 |
 | [`DEPENDENCY-LICENSES.md`](DEPENDENCY-LICENSES.md) | Direct dependency licenses and SBOM entrypoint / 直接依赖许可证与 SBOM 入口 |
