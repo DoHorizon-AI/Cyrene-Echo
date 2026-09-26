@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -22,21 +21,18 @@ from referencing import Registry, Resource
 
 from cyrene_echo import create_app
 from cyrene_echo.domain import ArtifactRef
-from cyrene_echo.engine import sha256_file
+from cyrene_echo.engine import EchoArtifactPlane
 
 
 def _artifact(path: Path, artifact_root: Path) -> dict[str, Any]:
-    digest = sha256_file(path)
-    digest_hex = digest.removeprefix("sha256:")
-    objects = artifact_root / "sha256"
-    objects.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(path, objects / digest_hex)
-    return {
-        "uri": f"artifact://sha256/{digest_hex}",
-        "digest": digest,
-        "size_bytes": path.stat().st_size,
-        "kind": "dataset",
-    }
+    """Publish through the shared Platform artifact plane the Product uses.
+
+    中文:通过 Product 共用的 Platform artifact plane 发布。
+    """
+    # 中文:通过 Product 使用的共享 Platform 制品平面发布。
+
+    reference = EchoArtifactPlane(artifact_root).publish_bytes(path.read_bytes(), kind="dataset")
+    return reference.model_dump(exclude_none=True)
 
 
 def _close(app: Any) -> None:

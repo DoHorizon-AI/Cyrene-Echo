@@ -31,7 +31,7 @@ Versions below are pinned in the root `pyproject.toml` and resolved in
 | `httpx` | 0.28.1 | PyPI | BSD-3-Clause |
 | `pydantic` | 2.13.5 | PyPI | MIT |
 | `uvicorn` | 0.52.4 | PyPI | BSD-3-Clause |
-| `cyrene-plugin-runtime` | 0.2.0 | Plugins git revision `3afbac4d386eb7a27f6778149187884820c0b7f6` | UNDECLARED upstream / 上游未声明 |
+| `cyrene-plugin-runtime` | 0.2.0 | Plugins git revision `4d6f80f1117ab8f7ba389eb9b9049085335ffe2b` | UNDECLARED upstream / 上游未声明 |
 
 The Plugins runtime is a direct first-party dependency, but its package
 metadata at the pinned revision does not declare a license field. It must be
@@ -50,7 +50,7 @@ in Echo's runtime dependency set.
 
 | Package / 包 | Version / 版本 | License / 许可证 |
 |---|---:|---|
-| `cyrene-exact-match-evaluator` | 0.1.0, Plugins revision `3afbac4d386eb7a27f6778149187884820c0b7f6` | UNDECLARED upstream / 上游未声明 |
+| `cyrene-exact-match-evaluator` | 0.1.0, Plugins revision `4d6f80f1117ab8f7ba389eb9b9049085335ffe2b` | UNDECLARED upstream / 上游未声明 |
 | `jsonschema` | 4.26.0 | MIT |
 | `mypy` | 2.3.1 | MIT |
 | `openapi-spec-validator` | 0.9.0 | Apache-2.0 |

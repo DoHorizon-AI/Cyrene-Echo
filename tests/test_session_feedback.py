@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -25,7 +24,8 @@ from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry, Resource
 
 from cyrene_echo import create_app
-from cyrene_echo.engine import _parse_judge_score, sha256_file
+from cyrene_echo import engine as echo_engine
+from cyrene_echo.engine import EchoArtifactPlane, _parse_judge_score
 
 
 def _publish_jsonl(client: TestClient, records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -38,18 +38,11 @@ def _publish_jsonl(client: TestClient, records: list[dict[str, Any]]) -> dict[st
 
 
 def _stage_artifact(path: Path, artifact_root: Path) -> dict[str, Any]:
-    """Copy a local file into the artifact plane and return its ArtifactRef. | 投入制品。"""
+    """Publish a local file through the Product artifact plane. | 投入制品。"""
 
-    digest = sha256_file(path)
-    digest_hex = digest.removeprefix("sha256:")
-    objects = artifact_root / "sha256"
-    objects.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(path, objects / digest_hex)
+    reference = EchoArtifactPlane(artifact_root).publish_bytes(path.read_bytes(), kind="dataset")
     return {
-        "uri": f"artifact://sha256/{digest_hex}",
-        "digest": digest,
-        "size_bytes": path.stat().st_size,
-        "kind": "dataset",
+        **reference.model_dump(exclude_none=True),
     }
 
 
@@ -60,6 +53,7 @@ def _close(app: Any) -> None:
 # ════════════════════════════════════════════════════════════════════
 # SECTION: Deterministic session → feedback → Catalyst export path
 # ════════════════════════════════════════════════════════════════════
+# 中文:确定性会话 → 反馈 → Catalyst 导出路径。
 def test_session_to_feedback_export_deterministic(tmp_path: Path) -> None:
     records = [
         {
@@ -116,9 +110,11 @@ def test_session_to_feedback_export_deterministic(tmp_path: Path) -> None:
         result = client.get(f"/api/v1/evaluation-results/{run['resultId']}").json()
         gate = client.get(f"/api/v1/gate-decisions/{run['gateId']}").json()
         # Success-but-poor-score: run SUCCEEDED, gate FAIL (2/3 ≈ 0.667 < 0.7).
+        # 中文:成功但评分偏低:run 为 SUCCEEDED,gate 为 FAIL(2/3 ≈ 0.667 < 0.7)。
         assert result["score"] == pytest.approx(2 / 3)
         assert gate["outcome"] == "FAIL"
         # Per-sample results preserve evaluated model/endpoint/input version/usage.
+        # 中文:逐样本结果会保留被评估的 model/endpoint/输入版本/usage。
         samples = client.get(f"/api/v1/evaluation-runs/{run['id']}/samples").json()
         assert len(samples) == 3
         assert {s["sampleIndex"] for s in samples} == {1, 2, 3}
@@ -131,10 +127,12 @@ def test_session_to_feedback_export_deterministic(tmp_path: Path) -> None:
         second = next(s for s in samples if s["sampleIndex"] == 2)
         assert second["passed"] is False
         # Model did not provide Usage for sample 2 → honest None, never estimated.
+        # 中文:模型未提供样本 2 的 Usage -> 如实记录为 None,不做估算。
         assert second["usage"] is None
         assert second["judgeIdentity"] is None
 
         # Human correction on the low-score sample 2.
+        # 中文:对低分样本 2 进行人工修正。
         annotation = client.post(
             f"/api/v1/evaluation-runs/{run['id']}/annotations",
             json={
@@ -150,6 +148,7 @@ def test_session_to_feedback_export_deterministic(tmp_path: Path) -> None:
         annotations = client.get(f"/api/v1/evaluation-runs/{run['id']}/annotations").json()
         assert len(annotations) == 1
         # Filtering: only-failed returns sample 2; only-annotated returns sample 2.
+        # 中文:筛选结果:only-failed 返回样本 2;only-annotated 也返回样本 2。
         failed = client.get(f"/api/v1/evaluation-runs/{run['id']}/samples?only_passed=false").json()
         assert [s["sampleIndex"] for s in failed] == [2]
         annotated = client.get(
@@ -158,6 +157,7 @@ def test_session_to_feedback_export_deterministic(tmp_path: Path) -> None:
         assert [s["sampleIndex"] for s in annotated] == [2]
 
         # FeedbackSet built ONLY from explicitly selected samples (sample 2).
+        # 中文:FeedbackSet 仅由显式选中的样本(样本 2)构建。
         feedback = client.post(
             "/api/v1/feedback-sets",
             json={
@@ -176,6 +176,7 @@ def test_session_to_feedback_export_deterministic(tmp_path: Path) -> None:
         assert export_artifact["kind"] == "dataset"
         assert export_artifact["digest"].startswith("sha256:")
         # Download the Catalyst-compatible JSONL and verify provenance.
+        # 中文:下载 Catalyst 兼容的 JSONL 并验证来源。
         download = client.get(f"/api/v1/feedback-sets/{feedback['id']}/export")
         assert download.headers["content-type"] == "application/jsonl"
         rows = [json.loads(line) for line in download.text.splitlines() if line.strip()]
@@ -194,6 +195,7 @@ def test_session_to_feedback_export_deterministic(tmp_path: Path) -> None:
 # ════════════════════════════════════════════════════════════════════
 # SECTION: Held-out evaluation samples are never auto-exported as training data
 # ════════════════════════════════════════════════════════════════════
+# 中文:留出的评估样本绝不会自动导出为训练数据。
 def test_unselected_samples_are_not_exported_as_training_data(tmp_path: Path) -> None:
     records = [
         {"instruction": f"q{i}", "expected": str(i), "actual": str(i), "output": str(i)}
@@ -223,6 +225,7 @@ def test_unselected_samples_are_not_exported_as_training_data(tmp_path: Path) ->
             },
         ).json()
         # Only sample 3 is explicitly selected; 1,2,4,5 are held-out eval samples.
+        # 中文:只显式选择样本 3;样本 1、2、4、5 均为留出的评估样本。
         feedback = client.post(
             "/api/v1/feedback-sets",
             json={
@@ -241,6 +244,7 @@ def test_unselected_samples_are_not_exported_as_training_data(tmp_path: Path) ->
 # ════════════════════════════════════════════════════════════════════
 # SECTION: Evaluation failure vs success-low-score vs no-usage vs human-vs-model
 # ════════════════════════════════════════════════════════════════════
+# 中文:评估失败、低分成功、无用量,以及人工与模型判断的区别。
 def test_evaluation_failure_is_distinct_from_poor_score(tmp_path: Path) -> None:
     app = create_app(
         database_path=tmp_path / "echo.sqlite3",
@@ -303,6 +307,7 @@ def test_human_annotation_is_distinct_from_model_score(tmp_path: Path) -> None:
         ).json()
         sample = client.get(f"/api/v1/evaluation-runs/{run['id']}/samples/1").json()
         # Model/deterministic score says FAIL (0.0); human says manual_score 0.9.
+        # 中文:模型/确定性评分给出 FAIL(0.0);人工评分为 manual_score 0.9。
         assert sample["passed"] is False
         annotation = client.post(
             f"/api/v1/evaluation-runs/{run['id']}/annotations",
@@ -317,6 +322,7 @@ def test_human_annotation_is_distinct_from_model_score(tmp_path: Path) -> None:
         ).json()
         assert annotation["manualScore"] == 0.9
         # Both the model score and the human opinion are preserved independently.
+        # 中文:模型评分和人工意见会分别保留。
         sample_after = client.get(f"/api/v1/evaluation-runs/{run['id']}/samples/1").json()
         assert sample_after["score"] == 0.0
         assert sample_after["passed"] is False
@@ -326,6 +332,7 @@ def test_human_annotation_is_distinct_from_model_score(tmp_path: Path) -> None:
 # ════════════════════════════════════════════════════════════════════
 # SECTION: Judge score parser rejects out-of-range tokens
 # ════════════════════════════════════════════════════════════════════
+# 中文:Judge 评分解析器拒绝超出范围的 token。
 @pytest.mark.parametrize(
     ("content", "expected"),
     [
@@ -367,13 +374,16 @@ def test_parse_judge_score_does_not_accept_illegal_tokens_as_valid_scores() -> N
 # ════════════════════════════════════════════════════════════════════
 # SECTION: Exchange judge adapter against a local stdlib HTTP test double
 # ════════════════════════════════════════════════════════════════════
+# 中文:使用本地标准库 HTTP 测试替身覆盖 Exchange judge 适配器。
 class _JudgeDoubleHandler(BaseHTTPRequestHandler):
     """A local OpenAI-compatible test double for Exchange; NOT a real judge. | 测试替身。"""
 
     judge_score = 0.9
     include_usage = True
+    last_traceparent: str | None = None
 
     def do_POST(self) -> None:
+        _JudgeDoubleHandler.last_traceparent = self.headers.get("traceparent")
         path = urlparse(self.path).path
         if path != "/v1/chat/completions":
             self._json(HTTPStatus.NOT_FOUND, {"error": {"message": "not found"}})
@@ -414,10 +424,18 @@ def judge_double() -> Any:
     server.server_close()
 
 
+@pytest.mark.parametrize("usage_fault", [False, True])
 def test_exchange_judge_adapter_records_usage_and_judge_identity(
-    tmp_path: Path, judge_double: Any
+    tmp_path: Path,
+    judge_double: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    usage_fault: bool,
 ) -> None:
     port = judge_double.server_address[1]
+    _JudgeDoubleHandler.last_traceparent = None
+    trace_id = "4bf92f3577b34da6a3ce929d0e0e4736"
+    span_id = "00f067aa0ba902b7"
     endpoint = f"http://127.0.0.1:{port}/v1/chat/completions"
     records = [
         {
@@ -456,8 +474,15 @@ def test_exchange_judge_adapter_records_usage_and_judge_identity(
             },
         ).json()
         artifact = _publish_jsonl(client, records)
+        if usage_fault:
+
+            def fail_usage(**_: object) -> None:
+                raise ValueError("injected usage failure")
+
+            monkeypatch.setattr(echo_engine, "UsageFacts", fail_usage)
         run = client.post(
             "/api/v1/evaluation-runs",
+            headers={"traceparent": f"00-{trace_id}-{span_id}-01"},
             json={
                 "suiteId": suite["id"],
                 "inputArtifact": artifact,
@@ -468,10 +493,26 @@ def test_exchange_judge_adapter_records_usage_and_judge_identity(
         sample = client.get(f"/api/v1/evaluation-runs/{run['id']}/samples/1").json()
         assert sample["evaluator"] == "llm_judge.v1"
         assert sample["judgeIdentity"] == f"judge-test-model@{endpoint}"
-        assert sample["usage"]["promptTokens"] == 11
-        assert sample["usage"]["totalTokens"] == 14
+        if usage_fault:
+            assert sample.get("usage") is None
+            logs = [
+                json.loads(line)
+                for line in capsys.readouterr().err.splitlines()
+                if line.startswith("{")
+            ]
+            diagnostic = next(
+                record
+                for record in logs
+                if record.get("event.name") == "echo.engine.invalid_usage_facts"
+            )
+            assert diagnostic["trace_id"] == trace_id
+            assert diagnostic["span_id"] == span_id
+        else:
+            assert sample["usage"]["promptTokens"] == 11
+            assert sample["usage"]["totalTokens"] == 14
         assert sample["score"] == pytest.approx(0.9)
         assert sample["passed"] is True
+        assert _JudgeDoubleHandler.last_traceparent == f"00-{trace_id}-{span_id}-01"
     _close(app)
 
 
@@ -525,6 +566,7 @@ def test_exchange_judge_without_usage_records_none(tmp_path: Path, judge_double:
             ).json()
             sample = client.get(f"/api/v1/evaluation-runs/{run['id']}/samples/1").json()
             # Model did not provide Usage → honest None, never estimated.
+            # 中文:模型未提供 Usage -> 如实记录为 None,不做估算。
             assert sample["usage"] is None
     finally:
         _JudgeDoubleHandler.include_usage = True
@@ -603,6 +645,7 @@ def test_llm_judge_suite_requires_judge_profile(tmp_path: Path) -> None:
 # ════════════════════════════════════════════════════════════════════
 # SECTION: Wire outputs conform to the frozen JSON Schemas
 # ════════════════════════════════════════════════════════════════════
+# 中文:线协议输出符合冻结的 JSON Schema。
 def _registry() -> Registry:
     contract_root = Path(__file__).parents[1] / "contracts/product/v1"
     artifact_schema = json.loads(

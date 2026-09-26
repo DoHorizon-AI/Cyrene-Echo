@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import shutil
+import sys
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
@@ -22,6 +22,9 @@ from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol
+
+from cy_artifacts import ArtifactError, ArtifactKind, LocalArtifactProvider
+from cy_artifacts import ArtifactRef as PlatformArtifactRef
 
 from cyrene_echo.domain import (
     ArtifactRef,
@@ -32,6 +35,7 @@ from cyrene_echo.domain import (
     UsageFacts,
 )
 from cyrene_echo.errors import EchoError, EvaluationEngineFailure
+from cyrene_echo.logging import format_cyrene_log
 
 
 def sha256_file(path: Path) -> str:
@@ -77,6 +81,7 @@ class RunnerAcceptance(StrEnum):
     LOCAL_ENDPOINT_VERIFIED = "LOCAL_ENDPOINT_VERIFIED"
     WIRED_NOT_RUN = "WIRED_NOT_RUN"
     # Test doubles only. MOCK is never a selectable runtime binding.
+    # 中文:仅用于测试的替身。MOCK 绝不会成为可选的运行时 binding。
     MOCK = "MOCK"
 
 
@@ -138,7 +143,9 @@ _SCORE_PATTERN = re.compile(
 )
 
 
-def _parse_judge_score(content: str | None) -> float:
+def _parse_judge_score(
+    content: str | None, *, trace_id: str | None = None, span_id: str | None = None
+) -> float:
     """Parse a [0,1] score from judge text; never fabricates a value. | 解析判官评分。"""
 
     if not content:
@@ -148,7 +155,18 @@ def _parse_judge_score(content: str | None) -> float:
         return 0.0
     try:
         value = float(match.group(1))
-    except ValueError:
+    except ValueError as exc:
+        sys.stderr.write(
+            format_cyrene_log(
+                level="WARN",
+                event_name="echo.engine.invalid_judge_score",
+                message="Failed to parse judge score",
+                trace_id=trace_id,
+                span_id=span_id,
+                attributes={"cause_type": type(exc).__name__},
+            )
+            + "\n"
+        )
         return 0.0
     if value < 0.0 or value > 1.0:
         return 0.0
@@ -165,12 +183,21 @@ class ExchangeJudgePort:
     double, never a real model endpoint.
     """
 
-    def __init__(self, profile: JudgeProfile, *, bearer_token: str) -> None:
+    def __init__(
+        self,
+        profile: JudgeProfile,
+        *,
+        bearer_token: str,
+        trace_id: str | None = None,
+        span_id: str | None = None,
+    ) -> None:
         if not bearer_token.strip():
             raise EvaluationEngineFailure("Exchange judge requires a non-empty bearer token.")
         self._profile = profile
         self._bearer_token = bearer_token
         self._judge_identity = f"{profile.judge_model}@{profile.exchange_endpoint_ref}"
+        self._trace_id = trace_id
+        self._span_id = span_id
 
     def evaluate(self, source: Path, suite: EvaluationSuite, report_path: Path) -> EngineEvaluation:
         """Invoke the configured judge for each sample through Exchange. | 调用判官。"""
@@ -245,15 +272,18 @@ class ExchangeJudgePort:
                 "stream": False,
             }
         ).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {self._bearer_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        if self._trace_id and self._span_id:
+            headers["traceparent"] = f"00-{self._trace_id}-{self._span_id}-01"
         request = urllib.request.Request(
             self._profile.exchange_endpoint_ref,
             data=body,
             method="POST",
-            headers={
-                "Authorization": f"Bearer {self._bearer_token}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
@@ -267,8 +297,8 @@ class ExchangeJudgePort:
         except (ValueError, json.JSONDecodeError) as exc:
             raise EvaluationEngineFailure("Exchange judge returned a non-JSON response.") from exc
         content = _extract_message_content(payload)
-        usage = _extract_usage(payload)
-        score = _parse_judge_score(content)
+        usage = _extract_usage(payload, trace_id=self._trace_id, span_id=self._span_id)
+        score = _parse_judge_score(content, trace_id=self._trace_id, span_id=self._span_id)
         return SampleEvaluation(
             sample_index=sample_index,
             input_record=record,
@@ -300,7 +330,9 @@ def _extract_message_content(payload: dict[str, Any]) -> str | None:
     return content if isinstance(content, str) else None
 
 
-def _extract_usage(payload: dict[str, Any]) -> UsageFacts | None:
+def _extract_usage(
+    payload: dict[str, Any], *, trace_id: str | None = None, span_id: str | None = None
+) -> UsageFacts | None:
     """Project Exchange provider usage without estimating missing tokens. | 投影 usage。"""
 
     raw = payload.get("usage")
@@ -317,7 +349,23 @@ def _extract_usage(payload: dict[str, Any]) -> UsageFacts | None:
             completion_tokens=completion,
             total_tokens=total,
         )
-    except ValueError:
+    except ValueError as exc:
+        sys.stderr.write(
+            format_cyrene_log(
+                level="WARN",
+                event_name="echo.engine.invalid_usage_facts",
+                message="Failed to instantiate UsageFacts from raw values",
+                trace_id=trace_id,
+                span_id=span_id,
+                attributes={
+                    "cause": str(exc),
+                    "prompt": prompt,
+                    "completion": completion,
+                    "total": total,
+                },
+            )
+            + "\n"
+        )
         return None
 
 
@@ -346,13 +394,12 @@ class ArtifactPlane(Protocol):
 
 
 class EchoArtifactPlane:
-    """Echo-owned filesystem adapter for the ArtifactRef wire shape. | Echo 本地制品适配器。"""
+    """Platform Artifact SDK adapter for the ArtifactRef wire shape. | Echo 制品适配器。"""
 
     def __init__(self, root: Path) -> None:
         self.root = root
-        self.objects = root / "sha256"
+        self._provider = LocalArtifactProvider(root)
         self.staging = root / ".staging"
-        self.objects.mkdir(parents=True, exist_ok=True)
         self.staging.mkdir(parents=True, exist_ok=True)
 
     def resolve(self, reference: ArtifactRef) -> Path:
@@ -366,22 +413,16 @@ class EchoArtifactPlane:
                 detail="The ArtifactRef URI and digest identify different content.",
                 status=422,
             )
-        path = self.objects / digest_hex
-        if not path.is_file():
+        try:
+            resolved = self._provider.resolve(PlatformArtifactRef.from_dict(reference.model_dump()))
+        except ArtifactError as exc:
             raise EchoError(
                 code="ECHO_ARTIFACT_UNAVAILABLE",
                 title="Artifact unavailable",
                 detail="The evaluation input cannot be read.",
                 status=422,
-            )
-        if path.stat().st_size != reference.size_bytes or sha256_file(path) != reference.digest:
-            raise EchoError(
-                code="ECHO_ARTIFACT_DIGEST_MISMATCH",
-                title="Artifact integrity failure",
-                detail="The input size or digest does not match its ArtifactRef.",
-                status=422,
-            )
-        return path
+            ) from exc
+        return Path(resolved.location)
 
     def stage_path(self, name: str) -> Path:
         """Return an evaluator staging path. | 返回评估器暂存路径。"""
@@ -391,29 +432,23 @@ class EchoArtifactPlane:
     def publish(self, path: Path) -> ArtifactRef:
         """Publish immutable report bytes. | 发布不可变报告字节。"""
 
-        digest = sha256_file(path)
-        digest_hex = digest.removeprefix("sha256:")
-        destination = self.objects / digest_hex
-        if not destination.exists():
-            shutil.copy2(path, destination)
-        return ArtifactRef(
-            uri=f"artifact://sha256/{digest_hex}",
-            digest=digest,
-            size_bytes=destination.stat().st_size,
-            kind="report",
-        )
+        return self.publish_bytes(path.read_bytes(), kind="report")
 
     def publish_bytes(self, data: bytes, *, kind: str) -> ArtifactRef:
         """Publish immutable bytes with an explicit artifact kind. | 发布字节制品。"""
 
-        digest = sha256_bytes(data)
-        digest_hex = digest.removeprefix("sha256:")
-        destination = self.objects / digest_hex
-        if not destination.exists():
-            destination.write_bytes(data)
-        return ArtifactRef(
-            uri=f"artifact://sha256/{digest_hex}",
-            digest=digest,
-            size_bytes=destination.stat().st_size,
-            kind=kind,
-        )
+        staged = self.stage_path(f"{sha256_bytes(data).removeprefix('sha256:')}.bin")
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        staged.write_bytes(data)
+        try:
+            reference = self._provider.publish(staged, kind=ArtifactKind(kind))
+        except ArtifactError as exc:
+            raise EchoError(
+                code="ECHO_ARTIFACT_UNAVAILABLE",
+                title="Artifact unavailable",
+                detail="The artifact bytes could not be published.",
+                status=422,
+            ) from exc
+        finally:
+            staged.unlink(missing_ok=True)
+        return ArtifactRef(**reference.to_dict())

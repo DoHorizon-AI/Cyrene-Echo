@@ -40,6 +40,7 @@ pull request 引用、tag 或 reflog。完整开发历史仅保留在私有恢�
 | [`PUBLICATION.md`](PUBLICATION.md) | Public-source target, evidence boundary, and blockers / 公开源码目标、证据边界与阻塞项 |
 | [`DEPENDENCY-LICENSES.md`](DEPENDENCY-LICENSES.md) | Direct dependency licenses and SBOM entrypoint / 直接依赖许可证与 SBOM 入口 |
 | [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) | First-party and upstream notice boundary / 一方与上游声明边界 |
+| [`logging-and-errors.md`](logging-and-errors.md) | Cross-repository logging, error codes, and diagnostics specification / 跨仓日志、错误码与诊断规范 (草案 v0.1) |
 
 ## Suggested order / 推荐顺序
 
