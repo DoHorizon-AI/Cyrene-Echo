@@ -143,7 +143,9 @@ _SCORE_PATTERN = re.compile(
 )
 
 
-def _parse_judge_score(content: str | None) -> float:
+def _parse_judge_score(
+    content: str | None, *, trace_id: str | None = None, span_id: str | None = None
+) -> float:
     """Parse a [0,1] score from judge text; never fabricates a value. | 解析判官评分。"""
 
     if not content:
@@ -153,7 +155,18 @@ def _parse_judge_score(content: str | None) -> float:
         return 0.0
     try:
         value = float(match.group(1))
-    except ValueError:
+    except ValueError as exc:
+        sys.stderr.write(
+            format_cyrene_log(
+                level="WARN",
+                event_name="echo.engine.invalid_judge_score",
+                message="Failed to parse judge score",
+                trace_id=trace_id,
+                span_id=span_id,
+                attributes={"cause_type": type(exc).__name__},
+            )
+            + "\n"
+        )
         return 0.0
     if value < 0.0 or value > 1.0:
         return 0.0
@@ -170,12 +183,21 @@ class ExchangeJudgePort:
     double, never a real model endpoint.
     """
 
-    def __init__(self, profile: JudgeProfile, *, bearer_token: str) -> None:
+    def __init__(
+        self,
+        profile: JudgeProfile,
+        *,
+        bearer_token: str,
+        trace_id: str | None = None,
+        span_id: str | None = None,
+    ) -> None:
         if not bearer_token.strip():
             raise EvaluationEngineFailure("Exchange judge requires a non-empty bearer token.")
         self._profile = profile
         self._bearer_token = bearer_token
         self._judge_identity = f"{profile.judge_model}@{profile.exchange_endpoint_ref}"
+        self._trace_id = trace_id
+        self._span_id = span_id
 
     def evaluate(self, source: Path, suite: EvaluationSuite, report_path: Path) -> EngineEvaluation:
         """Invoke the configured judge for each sample through Exchange. | 调用判官。"""
@@ -250,15 +272,18 @@ class ExchangeJudgePort:
                 "stream": False,
             }
         ).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {self._bearer_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        if self._trace_id and self._span_id:
+            headers["traceparent"] = f"00-{self._trace_id}-{self._span_id}-01"
         request = urllib.request.Request(
             self._profile.exchange_endpoint_ref,
             data=body,
             method="POST",
-            headers={
-                "Authorization": f"Bearer {self._bearer_token}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
@@ -272,8 +297,8 @@ class ExchangeJudgePort:
         except (ValueError, json.JSONDecodeError) as exc:
             raise EvaluationEngineFailure("Exchange judge returned a non-JSON response.") from exc
         content = _extract_message_content(payload)
-        usage = _extract_usage(payload)
-        score = _parse_judge_score(content)
+        usage = _extract_usage(payload, trace_id=self._trace_id, span_id=self._span_id)
+        score = _parse_judge_score(content, trace_id=self._trace_id, span_id=self._span_id)
         return SampleEvaluation(
             sample_index=sample_index,
             input_record=record,
@@ -305,7 +330,9 @@ def _extract_message_content(payload: dict[str, Any]) -> str | None:
     return content if isinstance(content, str) else None
 
 
-def _extract_usage(payload: dict[str, Any]) -> UsageFacts | None:
+def _extract_usage(
+    payload: dict[str, Any], *, trace_id: str | None = None, span_id: str | None = None
+) -> UsageFacts | None:
     """Project Exchange provider usage without estimating missing tokens. | 投影 usage。"""
 
     raw = payload.get("usage")
@@ -328,6 +355,8 @@ def _extract_usage(payload: dict[str, Any]) -> UsageFacts | None:
                 level="WARN",
                 event_name="echo.engine.invalid_usage_facts",
                 message="Failed to instantiate UsageFacts from raw values",
+                trace_id=trace_id,
+                span_id=span_id,
                 attributes={
                     "cause": str(exc),
                     "prompt": prompt,

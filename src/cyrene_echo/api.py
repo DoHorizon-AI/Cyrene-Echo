@@ -350,10 +350,16 @@ def create_app(
         status_code=201,
     )
     def create_run(
+        request: Request,
         command: CreateRunRequest,
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=200),
     ) -> EvaluationRun:
-        return service.create_run(command, idempotency_key)
+        return service.create_run(
+            command,
+            idempotency_key,
+            trace_id=request.state.trace_id,
+            span_id=request.state.span_id,
+        )
 
     @app.get(
         "/api/v1/evaluation-runs/{runId}",
