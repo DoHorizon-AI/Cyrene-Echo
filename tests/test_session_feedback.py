@@ -24,6 +24,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry, Resource
 
 from cyrene_echo import create_app
+from cyrene_echo import engine as echo_engine
 from cyrene_echo.engine import EchoArtifactPlane, _parse_judge_score
 
 
@@ -379,8 +380,10 @@ class _JudgeDoubleHandler(BaseHTTPRequestHandler):
 
     judge_score = 0.9
     include_usage = True
+    last_traceparent: str | None = None
 
     def do_POST(self) -> None:
+        _JudgeDoubleHandler.last_traceparent = self.headers.get("traceparent")
         path = urlparse(self.path).path
         if path != "/v1/chat/completions":
             self._json(HTTPStatus.NOT_FOUND, {"error": {"message": "not found"}})
@@ -421,10 +424,18 @@ def judge_double() -> Any:
     server.server_close()
 
 
+@pytest.mark.parametrize("usage_fault", [False, True])
 def test_exchange_judge_adapter_records_usage_and_judge_identity(
-    tmp_path: Path, judge_double: Any
+    tmp_path: Path,
+    judge_double: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    usage_fault: bool,
 ) -> None:
     port = judge_double.server_address[1]
+    _JudgeDoubleHandler.last_traceparent = None
+    trace_id = "4bf92f3577b34da6a3ce929d0e0e4736"
+    span_id = "00f067aa0ba902b7"
     endpoint = f"http://127.0.0.1:{port}/v1/chat/completions"
     records = [
         {
@@ -463,8 +474,15 @@ def test_exchange_judge_adapter_records_usage_and_judge_identity(
             },
         ).json()
         artifact = _publish_jsonl(client, records)
+        if usage_fault:
+
+            def fail_usage(**_: object) -> None:
+                raise ValueError("injected usage failure")
+
+            monkeypatch.setattr(echo_engine, "UsageFacts", fail_usage)
         run = client.post(
             "/api/v1/evaluation-runs",
+            headers={"traceparent": f"00-{trace_id}-{span_id}-01"},
             json={
                 "suiteId": suite["id"],
                 "inputArtifact": artifact,
@@ -475,10 +493,26 @@ def test_exchange_judge_adapter_records_usage_and_judge_identity(
         sample = client.get(f"/api/v1/evaluation-runs/{run['id']}/samples/1").json()
         assert sample["evaluator"] == "llm_judge.v1"
         assert sample["judgeIdentity"] == f"judge-test-model@{endpoint}"
-        assert sample["usage"]["promptTokens"] == 11
-        assert sample["usage"]["totalTokens"] == 14
+        if usage_fault:
+            assert sample.get("usage") is None
+            logs = [
+                json.loads(line)
+                for line in capsys.readouterr().err.splitlines()
+                if line.startswith("{")
+            ]
+            diagnostic = next(
+                record
+                for record in logs
+                if record.get("event.name") == "echo.engine.invalid_usage_facts"
+            )
+            assert diagnostic["trace_id"] == trace_id
+            assert diagnostic["span_id"] == span_id
+        else:
+            assert sample["usage"]["promptTokens"] == 11
+            assert sample["usage"]["totalTokens"] == 14
         assert sample["score"] == pytest.approx(0.9)
         assert sample["passed"] is True
+        assert _JudgeDoubleHandler.last_traceparent == f"00-{trace_id}-{span_id}-01"
     _close(app)
 
 

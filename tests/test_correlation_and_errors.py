@@ -14,8 +14,10 @@ import sys
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
+from cyrene_echo import engine as echo_engine
 from cyrene_echo.api import create_app
 from cyrene_echo.errors import (
     ECHO_ERROR_MAPPINGS,
@@ -112,6 +114,27 @@ def test_structured_ndjson_log_formatting() -> None:
     assert record["span_id"] == "00f067aa0ba902b7"
     assert record["attributes"]["run_id"] == "run-123"
     assert record["attributes"]["secret"] == "[REDACTED]"
+
+
+def test_usage_fault_keeps_request_trace(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def fail_usage(**_: object) -> None:
+        raise ValueError("invalid usage")
+
+    monkeypatch.setattr(echo_engine, "UsageFacts", fail_usage)
+    trace_id = "4bf92f3577b34da6a3ce929d0e0e4736"
+    span_id = "00f067aa0ba902b7"
+    assert (
+        echo_engine._extract_usage(
+            {"usage": {"prompt_tokens": 1}}, trace_id=trace_id, span_id=span_id
+        )
+        is None
+    )
+    record = json.loads(capsys.readouterr().err)
+    assert record["event.name"] == "echo.engine.invalid_usage_facts"
+    assert record["trace_id"] == trace_id
+    assert record["span_id"] == span_id
 
 
 def test_oversized_log_record_truncation() -> None:
