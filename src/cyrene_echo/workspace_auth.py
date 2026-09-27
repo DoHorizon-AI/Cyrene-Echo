@@ -123,10 +123,8 @@ class WorkspaceServiceAuthenticator:
             or any(not 33 <= ord(character) <= 126 for character in token)
         ):
             return None
-        try:
-            token_bytes = token.encode("ascii")
-        except UnicodeEncodeError:
-            return None
+        # The token validation above admits printable ASCII only.
+        token_bytes = token.encode("ascii")
         if len(token_bytes) < _MIN_TOKEN_BYTES:
             return None
 
