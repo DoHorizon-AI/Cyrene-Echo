@@ -51,6 +51,7 @@ from cyrene_echo.engine import (
 )
 from cyrene_echo.errors import EchoError, EvaluationEngineFailure
 from cyrene_echo.store import EchoStore
+from cyrene_echo.workspace_auth import WorkspaceServicePrincipal
 
 
 def request_hash(command: ContractModel) -> str:
@@ -128,10 +129,71 @@ class EchoService:
         )
         return suite
 
+    def create_workspace_suite(
+        self,
+        command: CreateSuiteRequest,
+        idempotency_key: str | None,
+        principal: WorkspaceServicePrincipal,
+    ) -> EvaluationSuite:
+        """Create a suite in the authenticated Workspace scope only."""
+
+        if command.judge_profile_id is not None:
+            raise EchoError(
+                code="ECHO_WORKSPACE_JUDGE_PROFILE_SCOPE_REQUIRED",
+                title="Workspace-scoped judge profile required",
+                detail=(
+                    "Workspace-scoped suites cannot reference a JudgeProfile without "
+                    "Workspace ownership."
+                ),
+                status=403,
+            )
+        if command.evaluator == "llm_judge.v1":
+            raise EchoError(
+                code="ECHO_SUITE_JUDGE_PROFILE_REQUIRED",
+                title="Judge profile required",
+                detail="An llm_judge.v1 suite must reference a JudgeProfile.",
+                status=422,
+            )
+
+        now = utc_now()
+        suite = EvaluationSuite(
+            id=uuid4(),
+            name=command.name,
+            evaluator=command.evaluator,
+            expected_field=command.expected_field,
+            actual_field=command.actual_field,
+            threshold=command.threshold,
+            judge_profile_id=None,
+            created_at=now,
+            updated_at=now,
+            resource_version=1,
+        )
+        return self.store.create_workspace_suite(
+            suite,
+            principal,
+            idempotency_key,
+            request_hash(command),
+        )
+
     def get_suite(self, suite_id: UUID) -> EvaluationSuite:
         """Read an EvaluationSuite. | 读取 EvaluationSuite。"""
 
         suite = self.store.get_suite(suite_id)
+        if suite is None:
+            raise EchoError(
+                code="ECHO_SUITE_NOT_FOUND",
+                title="EvaluationSuite not found",
+                detail="No EvaluationSuite exists with the requested id.",
+                status=404,
+            )
+        return suite
+
+    def get_workspace_suite(
+        self, suite_id: UUID, principal: WorkspaceServicePrincipal
+    ) -> EvaluationSuite:
+        """Read an EvaluationSuite assigned to the authenticated Workspace."""
+
+        suite = self.store.get_suite(suite_id, principal)
         if suite is None:
             raise EchoError(
                 code="ECHO_SUITE_NOT_FOUND",

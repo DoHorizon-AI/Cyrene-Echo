@@ -28,6 +28,7 @@ from cyrene_echo.domain import (
     SampleRecord,
 )
 from cyrene_echo.errors import EchoError
+from cyrene_echo.workspace_auth import WorkspaceServicePrincipal
 
 
 class EchoStore:
@@ -46,19 +47,96 @@ class EchoStore:
                     kind TEXT NOT NULL,
                     id TEXT NOT NULL,
                     document TEXT NOT NULL,
+                    organization_id TEXT,
+                    workspace_id TEXT,
                     PRIMARY KEY(kind, id)
                 );
                 CREATE TABLE IF NOT EXISTS idempotency (
                     scope TEXT NOT NULL,
+                    organization_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
                     key TEXT NOT NULL,
                     request_hash TEXT NOT NULL,
                     resource_id TEXT NOT NULL,
-                    PRIMARY KEY(scope, key)
+                    PRIMARY KEY(scope, organization_id, workspace_id, key)
                 );
                 CREATE INDEX IF NOT EXISTS idx_resources_kind_run
                     ON resources(kind, id);
                 """
             )
+        self._migrate_workspace_scope_schema()
+
+    def _migrate_workspace_scope_schema(self) -> None:
+        """Add Workspace ownership and preserve old rows as unscoped."""
+
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                resource_columns = {
+                    str(row["name"])
+                    for row in self._connection.execute("PRAGMA table_info(resources)")
+                }
+                if "organization_id" not in resource_columns:
+                    self._connection.execute(
+                        "ALTER TABLE resources ADD COLUMN organization_id TEXT"
+                    )
+                if "workspace_id" not in resource_columns:
+                    self._connection.execute("ALTER TABLE resources ADD COLUMN workspace_id TEXT")
+
+                idempotency_info = list(self._connection.execute("PRAGMA table_info(idempotency)"))
+                idempotency_columns = {str(row["name"]) for row in idempotency_info}
+                primary_key = [
+                    str(row["name"])
+                    for row in sorted(idempotency_info, key=lambda item: int(item["pk"]))
+                    if int(row["pk"]) > 0
+                ]
+                expected_primary_key = ["scope", "organization_id", "workspace_id", "key"]
+                if (
+                    not {"organization_id", "workspace_id"}.issubset(idempotency_columns)
+                    or primary_key != expected_primary_key
+                ):
+                    organization_expr = (
+                        "organization_id" if "organization_id" in idempotency_columns else "''"
+                    )
+                    workspace_expr = (
+                        "workspace_id" if "workspace_id" in idempotency_columns else "''"
+                    )
+                    self._connection.execute(
+                        """
+                        CREATE TABLE idempotency_workspace_new (
+                            scope TEXT NOT NULL,
+                            organization_id TEXT NOT NULL,
+                            workspace_id TEXT NOT NULL,
+                            key TEXT NOT NULL,
+                            request_hash TEXT NOT NULL,
+                            resource_id TEXT NOT NULL,
+                            PRIMARY KEY(scope, organization_id, workspace_id, key)
+                        )
+                        """
+                    )
+                    migration_sql = f"""
+                        INSERT INTO idempotency_workspace_new(
+                            scope, organization_id, workspace_id, key, request_hash, resource_id
+                        )
+                        SELECT scope, {organization_expr}, {workspace_expr}, key,
+                               request_hash, resource_id
+                        FROM idempotency
+                        """
+                    self._connection.execute(migration_sql)
+                    self._connection.execute("DROP TABLE idempotency")
+                    self._connection.execute(
+                        "ALTER TABLE idempotency_workspace_new RENAME TO idempotency"
+                    )
+
+                self._connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_resources_workspace_scope "
+                    "ON resources(kind, organization_id, workspace_id, id)"
+                )
+                self._connection.execute("PRAGMA user_version = 1")
+                self._connection.commit()
+            except Exception:
+                self._connection.rollback()
+                raise
 
     def close(self) -> None:
         """Close the database connection. | 关闭数据库连接。"""
@@ -86,9 +164,94 @@ class EchoStore:
         document = resource.model_dump_json(by_alias=True, exclude_none=True)
         with self._lock, self._connection:
             self._connection.execute(
-                "INSERT OR REPLACE INTO resources(kind, id, document) VALUES (?, ?, ?)",
+                "INSERT OR REPLACE INTO resources("
+                "kind, id, document, organization_id, workspace_id) "
+                "VALUES (?, ?, ?, NULL, NULL)",
                 (kind, resource_id, document),
             )
+
+    def create_workspace_suite(
+        self,
+        suite: EvaluationSuite,
+        principal: WorkspaceServicePrincipal,
+        idempotency_key: str | None,
+        digest: str,
+    ) -> EvaluationSuite:
+        """Atomically persist a scoped suite and its scoped replay record."""
+
+        document = suite.model_dump_json(by_alias=True, exclude_none=True)
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                if idempotency_key is not None:
+                    replay = self._connection.execute(
+                        "SELECT request_hash, resource_id FROM idempotency "
+                        "WHERE scope = 'create-suite' AND organization_id = ? "
+                        "AND workspace_id = ? AND key = ?",
+                        (principal.organization_id, principal.workspace_id, idempotency_key),
+                    ).fetchone()
+                    if replay is not None:
+                        if replay["request_hash"] != digest:
+                            raise EchoError(
+                                code="ECHO_IDEMPOTENCY_CONFLICT",
+                                title="Idempotency key conflict",
+                                detail=(
+                                    "The Idempotency-Key was already used with a different "
+                                    "request body."
+                                ),
+                                status=409,
+                            )
+                        scoped_suite = self._connection.execute(
+                            "SELECT document FROM resources WHERE kind = 'suite' AND id = ? "
+                            "AND organization_id = ? AND workspace_id = ?",
+                            (
+                                str(replay["resource_id"]),
+                                principal.organization_id,
+                                principal.workspace_id,
+                            ),
+                        ).fetchone()
+                        if scoped_suite is None:
+                            raise EchoError(
+                                code="ECHO_STATE_CORRUPT",
+                                title="Product state is inconsistent",
+                                detail=(
+                                    "The idempotency ledger references a missing EvaluationSuite."
+                                ),
+                                status=500,
+                            )
+                        result = EvaluationSuite.model_validate_json(scoped_suite["document"])
+                        self._connection.commit()
+                        return result
+
+                self._connection.execute(
+                    "INSERT INTO resources(kind, id, document, organization_id, workspace_id) "
+                    "VALUES ('suite', ?, ?, ?, ?)",
+                    (
+                        str(suite.id),
+                        document,
+                        principal.organization_id,
+                        principal.workspace_id,
+                    ),
+                )
+                if idempotency_key is not None:
+                    self._connection.execute(
+                        "INSERT INTO idempotency("
+                        "scope, organization_id, workspace_id, key, request_hash, resource_id) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            "create-suite",
+                            principal.organization_id,
+                            principal.workspace_id,
+                            idempotency_key,
+                            digest,
+                            str(suite.id),
+                        ),
+                    )
+                self._connection.commit()
+                return suite
+            except Exception:
+                self._connection.rollback()
+                raise
 
     def save_outcome(
         self, result: EvaluationResult, gate: GateDecision, run: EvaluationRun
@@ -129,10 +292,27 @@ class EchoStore:
             ).fetchone()
         return str(row["document"]) if row else None
 
-    def get_suite(self, resource_id: UUID) -> EvaluationSuite | None:
+    def get_suite(
+        self,
+        resource_id: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> EvaluationSuite | None:
         """Read an EvaluationSuite. | 读取 EvaluationSuite。"""
 
-        document = self._get("suite", resource_id)
+        with self._lock:
+            if principal is None:
+                row = self._connection.execute(
+                    "SELECT document FROM resources WHERE kind = 'suite' AND id = ? "
+                    "AND organization_id IS NULL AND workspace_id IS NULL",
+                    (str(resource_id),),
+                ).fetchone()
+            else:
+                row = self._connection.execute(
+                    "SELECT document FROM resources WHERE kind = 'suite' AND id = ? "
+                    "AND organization_id = ? AND workspace_id = ?",
+                    (str(resource_id), principal.organization_id, principal.workspace_id),
+                ).fetchone()
+        document = str(row["document"]) if row else None
         return EvaluationSuite.model_validate_json(document) if document else None
 
     def get_input(self, resource_id: UUID) -> EvaluationInput | None:
@@ -167,8 +347,9 @@ class EchoStore:
                 (str(resource.id), resource.model_dump_json(exclude_none=True)),
             )
             self._connection.execute(
-                "INSERT INTO idempotency(scope, key, request_hash, resource_id) "
-                "VALUES ('import-input', ?, ?, ?)",
+                "INSERT INTO idempotency("
+                "scope, organization_id, workspace_id, key, request_hash, resource_id) "
+                "VALUES ('import-input', '', '', ?, ?, ?)",
                 (key, digest, str(resource.id)),
             )
         return resource
@@ -177,19 +358,28 @@ class EchoStore:
         """Read an EvaluationRun. | 读取 EvaluationRun。"""
 
         document = self._get("run", resource_id)
-        return EvaluationRun.model_validate_json(document) if document else None
+        run = EvaluationRun.model_validate_json(document) if document else None
+        if run is not None and self.get_suite(run.suite_id) is None:
+            return None
+        return run
 
     def get_result(self, resource_id: UUID) -> EvaluationResult | None:
         """Read an EvaluationResult. | 读取 EvaluationResult。"""
 
         document = self._get("result", resource_id)
-        return EvaluationResult.model_validate_json(document) if document else None
+        result = EvaluationResult.model_validate_json(document) if document else None
+        if result is not None and self.get_run(result.run_id) is None:
+            return None
+        return result
 
     def get_gate(self, resource_id: UUID) -> GateDecision | None:
         """Read a GateDecision. | 读取 GateDecision。"""
 
         document = self._get("gate", resource_id)
-        return GateDecision.model_validate_json(document) if document else None
+        gate = GateDecision.model_validate_json(document) if document else None
+        if gate is not None and self.get_run(gate.run_id) is None:
+            return None
+        return gate
 
     def get_judge_profile(self, resource_id: UUID) -> JudgeProfile | None:
         """Read a JudgeProfile. | 读取 JudgeProfile。"""
@@ -201,19 +391,28 @@ class EchoStore:
         """Read a SampleRecord. | 读取 SampleRecord。"""
 
         document = self._get("sample", resource_id)
-        return SampleRecord.model_validate_json(document) if document else None
+        sample = SampleRecord.model_validate_json(document) if document else None
+        if sample is not None and self.get_run(sample.run_id) is None:
+            return None
+        return sample
 
     def get_annotation(self, resource_id: UUID) -> HumanAnnotation | None:
         """Read a HumanAnnotation. | 读取 HumanAnnotation。"""
 
         document = self._get("annotation", resource_id)
-        return HumanAnnotation.model_validate_json(document) if document else None
+        annotation = HumanAnnotation.model_validate_json(document) if document else None
+        if annotation is not None and self.get_run(annotation.run_id) is None:
+            return None
+        return annotation
 
     def get_feedback_set(self, resource_id: UUID) -> FeedbackSet | None:
         """Read a FeedbackSet. | 读取 FeedbackSet。"""
 
         document = self._get("feedback_set", resource_id)
-        return FeedbackSet.model_validate_json(document) if document else None
+        feedback_set = FeedbackSet.model_validate_json(document) if document else None
+        if feedback_set is not None and self.get_run(feedback_set.run_id) is None:
+            return None
+        return feedback_set
 
     def get_feedback_handoff(self, resource_id: UUID) -> FeedbackHandoff | None:
         """Read a confirmed Catalyst handoff receipt. | 读取 Catalyst 交接回执。"""
@@ -253,6 +452,8 @@ class EchoStore:
     ) -> list[SampleRecord]:
         """List per-sample records for a run with optional filters. | 列出样本。"""
 
+        if self.get_run(run_id) is None:
+            return []
         annotated_ids = self._annotation_sample_indexes(run_id)
         rows = self._list_documents("sample", limit=limit, offset=offset)
         records: list[SampleRecord] = []
@@ -274,6 +475,8 @@ class EchoStore:
     def list_annotations(self, run_id: UUID) -> list[HumanAnnotation]:
         """List human annotations for a run. | 列出标注。"""
 
+        if self.get_run(run_id) is None:
+            return []
         rows = self._list_documents("annotation", limit=1000, offset=0)
         annotations: list[HumanAnnotation] = []
         for document in rows:
@@ -290,6 +493,8 @@ class EchoStore:
         for document in rows:
             feedback_set = FeedbackSet.model_validate_json(document)
             if run_id is not None and feedback_set.run_id != run_id:
+                continue
+            if self.get_run(feedback_set.run_id) is None:
                 continue
             sets.append(feedback_set)
         return sets
@@ -311,15 +516,24 @@ class EchoStore:
                 indexes.add(annotation.sample_index)
         return indexes
 
-    def resolve_idempotency(self, scope: str, key: str | None, digest: str) -> str | None:
+    def resolve_idempotency(
+        self,
+        scope: str,
+        key: str | None,
+        digest: str,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> str | None:
         """Resolve replay or reject conflicting key reuse. | 解析幂等重放。"""
 
         if key is None:
             return None
+        organization_id = principal.organization_id if principal else ""
+        workspace_id = principal.workspace_id if principal else ""
         with self._lock:
             row = self._connection.execute(
-                "SELECT request_hash, resource_id FROM idempotency WHERE scope = ? AND key = ?",
-                (scope, key),
+                "SELECT request_hash, resource_id FROM idempotency WHERE scope = ? "
+                "AND organization_id = ? AND workspace_id = ? AND key = ?",
+                (scope, organization_id, workspace_id, key),
             ).fetchone()
         if row is None:
             return None
@@ -333,15 +547,24 @@ class EchoStore:
         return str(row["resource_id"])
 
     def remember_idempotency(
-        self, *, scope: str, key: str | None, digest: str, resource_id: UUID
+        self,
+        *,
+        scope: str,
+        key: str | None,
+        digest: str,
+        resource_id: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
     ) -> None:
         """Persist a command-to-resource mapping. | 持久化命令资源映射。"""
 
         if key is None:
             return
+        organization_id = principal.organization_id if principal else ""
+        workspace_id = principal.workspace_id if principal else ""
         with self._lock, self._connection:
             self._connection.execute(
-                "INSERT INTO idempotency(scope, key, request_hash, resource_id) "
-                "VALUES (?, ?, ?, ?)",
-                (scope, key, digest, str(resource_id)),
+                "INSERT INTO idempotency("
+                "scope, organization_id, workspace_id, key, request_hash, resource_id) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (scope, organization_id, workspace_id, key, digest, str(resource_id)),
             )
