@@ -50,6 +50,7 @@ from cyrene_echo.engine import (
     resolve_runner_binding,
 )
 from cyrene_echo.errors import EchoError, EvaluationEngineFailure
+from cyrene_echo.runtime_activity import start_activity_source
 from cyrene_echo.store import EchoStore
 from cyrene_echo.workspace_auth import WorkspaceServicePrincipal
 
@@ -76,6 +77,16 @@ class EchoService:
         self.artifacts = artifacts
         self.engine = engine
         self.judge_bearer_token = judge_bearer_token
+        self.activity = start_activity_source(
+            "cyrene-echo",
+            self.store.list_active_activity_tasks,
+        )
+
+    def close(self) -> None:
+        """Stop the activity heartbeat during orderly application shutdown."""
+
+        if self.activity is not None:
+            self.activity.close()
 
     # ──────────────────────────────────────────────────────────────────
     # SECTION: EvaluationSuite + JudgeProfile lifecycle
@@ -284,7 +295,14 @@ class EchoService:
             updated_at=now,
             resource_version=1,
         )
-        self.store.save("run", run)
+        if self.activity is None:
+            self.store.save("run", run)
+        else:
+            self.activity.admit_and_persist(
+                str(run.id),
+                lambda: self.store.save("run", run),
+                state="RUNNING",
+            )
         self.store.remember_idempotency(
             scope="create-run",
             key=idempotency_key,
@@ -311,7 +329,13 @@ class EchoService:
                     "resource_version": 2,
                 }
             )
-            self.store.save("run", failed)
+            if self.activity is None:
+                self.store.save("run", failed)
+            else:
+                self.activity.complete_after_persist(
+                    str(run.id),
+                    lambda: self.store.save("run", failed),
+                )
             raise error from exc
         finally:
             report_path.unlink(missing_ok=True)
@@ -349,8 +373,15 @@ class EchoService:
                 "resource_version": 2,
             }
         )
-        self.store.save_outcome(result, gate, succeeded)
-        self.store.save_samples(samples)
+
+        def persist_outcome() -> None:
+            self.store.save_outcome(result, gate, succeeded)
+            self.store.save_samples(samples)
+
+        if self.activity is None:
+            persist_outcome()
+        else:
+            self.activity.complete_after_persist(str(run.id), persist_outcome)
         return succeeded
 
     def _binding_for(self, binding_id: str, suite: EvaluationSuite) -> RunnerBinding:
