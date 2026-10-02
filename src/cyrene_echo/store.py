@@ -363,6 +363,20 @@ class EchoStore:
             return None
         return run
 
+    def list_active_activity_tasks(self) -> list[dict[str, str]]:
+        """Return running evaluation runs for startup gate reconciliation."""
+
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT document FROM resources WHERE kind = 'run' ORDER BY rowid"
+            ).fetchall()
+        runs = [EvaluationRun.model_validate_json(row["document"]) for row in rows]
+        return [
+            {"task_id": str(run.id), "state": "RUNNING"}
+            for run in runs
+            if run.state.value == "RUNNING"
+        ]
+
     def get_result(self, resource_id: UUID) -> EvaluationResult | None:
         """Read an EvaluationResult. | 读取 EvaluationResult。"""
 

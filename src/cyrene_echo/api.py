@@ -84,6 +84,7 @@ def create_app(
     app = FastAPI(title="Cyrene Echo Product API", version="1.0.0")
     app.state.echo_store = store
     app.state.echo_service = service
+    app.router.on_shutdown.append(service.close)
     app.state.workspace_authenticator = (
         workspace_authenticator or WorkspaceServiceAuthenticator.from_json(None)
     )

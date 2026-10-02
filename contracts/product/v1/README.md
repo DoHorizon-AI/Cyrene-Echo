@@ -150,3 +150,14 @@ API 根路径为 `/api/v1`，使用 Workspace 的 `product-http-v1` 兼容配置
 ## Catalyst 交接契约
 
 Echo 将 `FeedbackSet` 导出为 kind 为 `dataset` 的 JSONL `ArtifactRef`。每行是一个 `TrainingCandidateRow`，包含 `instruction`、`output`、`input`、偏好样本对可选的 `rejectedOutput`，以及来源信息（`sourceRunId`、`sourceSampleIndex`、`sourceKind`、`evaluator`、`modelRef`、`annotatedBy`）。Catalyst 通过 `FeedbackImportRequest` 接收相同的 `ArtifactRef` 形状；Catalyst 的 `MappingConfig` 使用 `instruction`/`output`/`input`，忽略来源字段。Echo 要求 HTTP 201 回执，且目标必须精确为 `cyrene://catalyst/preparations/{id}`；它会将回执与 `HANDLED_OFF` 状态转换原子持久化，并在重启后对相同重试返回该回执。若 Catalyst 缺少字段，应显式提出请求，不要另造全局协议。
+
+## Product operation catalog v2
+
+This Product publishes its Workspace operation catalog at
+[../v2/catalog.json](../v2/catalog.json). Each listed operation binds its exact
+owner operationId to the corresponding OpenAPI source and schema pointers.
+The release manifest pins the catalog and its complete OpenAPI reference closure
+to the same repository commit. This catalog declares operation contracts only;
+Workspace policy controls access independently.
+
+本 Product 在 [../v2/catalog.json](../v2/catalog.json) 发布 Workspace 操作目录。每个目录项都将准确的 owner operationId 绑定到对应的 OpenAPI 文档和 schema pointer。发布清单会将目录及其完整 OpenAPI 引用闭包固定到同一仓库提交。目录只声明操作契约；访问权限由独立的 Workspace policy 控制。
