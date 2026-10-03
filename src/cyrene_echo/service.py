@@ -50,7 +50,9 @@ from cyrene_echo.engine import (
     resolve_runner_binding,
 )
 from cyrene_echo.errors import EchoError, EvaluationEngineFailure
+from cyrene_echo.runtime_activity import start_activity_source
 from cyrene_echo.store import EchoStore
+from cyrene_echo.workspace_auth import WorkspaceServicePrincipal
 
 
 def request_hash(command: ContractModel) -> str:
@@ -75,10 +77,21 @@ class EchoService:
         self.artifacts = artifacts
         self.engine = engine
         self.judge_bearer_token = judge_bearer_token
+        self.activity = start_activity_source(
+            "cyrene-echo",
+            self.store.list_active_activity_tasks,
+        )
+
+    def close(self) -> None:
+        """Stop the activity heartbeat during orderly application shutdown."""
+
+        if self.activity is not None:
+            self.activity.close()
 
     # ──────────────────────────────────────────────────────────────────
     # SECTION: EvaluationSuite + JudgeProfile lifecycle
     # ──────────────────────────────────────────────────────────────────
+    # 中文:EvaluationSuite 与 JudgeProfile 生命周期。
 
     def create_suite(
         self, command: CreateSuiteRequest, idempotency_key: str | None
@@ -127,10 +140,71 @@ class EchoService:
         )
         return suite
 
+    def create_workspace_suite(
+        self,
+        command: CreateSuiteRequest,
+        idempotency_key: str | None,
+        principal: WorkspaceServicePrincipal,
+    ) -> EvaluationSuite:
+        """Create a suite in the authenticated Workspace scope only."""
+
+        if command.judge_profile_id is not None:
+            raise EchoError(
+                code="ECHO_WORKSPACE_JUDGE_PROFILE_SCOPE_REQUIRED",
+                title="Workspace-scoped judge profile required",
+                detail=(
+                    "Workspace-scoped suites cannot reference a JudgeProfile without "
+                    "Workspace ownership."
+                ),
+                status=403,
+            )
+        if command.evaluator == "llm_judge.v1":
+            raise EchoError(
+                code="ECHO_SUITE_JUDGE_PROFILE_REQUIRED",
+                title="Judge profile required",
+                detail="An llm_judge.v1 suite must reference a JudgeProfile.",
+                status=422,
+            )
+
+        now = utc_now()
+        suite = EvaluationSuite(
+            id=uuid4(),
+            name=command.name,
+            evaluator=command.evaluator,
+            expected_field=command.expected_field,
+            actual_field=command.actual_field,
+            threshold=command.threshold,
+            judge_profile_id=None,
+            created_at=now,
+            updated_at=now,
+            resource_version=1,
+        )
+        return self.store.create_workspace_suite(
+            suite,
+            principal,
+            idempotency_key,
+            request_hash(command),
+        )
+
     def get_suite(self, suite_id: UUID) -> EvaluationSuite:
         """Read an EvaluationSuite. | 读取 EvaluationSuite。"""
 
         suite = self.store.get_suite(suite_id)
+        if suite is None:
+            raise EchoError(
+                code="ECHO_SUITE_NOT_FOUND",
+                title="EvaluationSuite not found",
+                detail="No EvaluationSuite exists with the requested id.",
+                status=404,
+            )
+        return suite
+
+    def get_workspace_suite(
+        self, suite_id: UUID, principal: WorkspaceServicePrincipal
+    ) -> EvaluationSuite:
+        """Read an EvaluationSuite assigned to the authenticated Workspace."""
+
+        suite = self.store.get_suite(suite_id, principal)
         if suite is None:
             raise EchoError(
                 code="ECHO_SUITE_NOT_FOUND",
@@ -187,13 +261,21 @@ class EchoService:
     # ──────────────────────────────────────────────────────────────────
     # SECTION: Session import + EvaluationRun execution
     # ──────────────────────────────────────────────────────────────────
+    # 中文:会话导入与 EvaluationRun 执行。
 
     def import_sessions(self, payload: bytes) -> ArtifactRef:
         """Publish raw session JSONL bytes as an immutable dataset artifact. | 导入会话。"""
 
         return self.artifacts.publish_bytes(payload, kind="dataset")
 
-    def create_run(self, command: CreateRunRequest, idempotency_key: str | None) -> EvaluationRun:
+    def create_run(
+        self,
+        command: CreateRunRequest,
+        idempotency_key: str | None,
+        *,
+        trace_id: str | None = None,
+        span_id: str | None = None,
+    ) -> EvaluationRun:
         """Execute an evaluator and atomically publish result, gate, samples. | 执行评估。"""
 
         suite = self.get_suite(command.suite_id)
@@ -213,7 +295,14 @@ class EchoService:
             updated_at=now,
             resource_version=1,
         )
-        self.store.save("run", run)
+        if self.activity is None:
+            self.store.save("run", run)
+        else:
+            self.activity.admit_and_persist(
+                str(run.id),
+                lambda: self.store.save("run", run),
+                state="RUNNING",
+            )
         self.store.remember_idempotency(
             scope="create-run",
             key=idempotency_key,
@@ -223,7 +312,7 @@ class EchoService:
         report_path = self.artifacts.stage_path(f"{run.id}.json")
         try:
             source_path = self.artifacts.resolve(command.input_artifact)
-            engine = self._engine_for(binding, suite)
+            engine = self._engine_for(binding, suite, trace_id=trace_id, span_id=span_id)
             measurement = engine.evaluate(source_path, suite, report_path)
             report = self.artifacts.publish(report_path)
         except (EchoError, EvaluationEngineFailure) as exc:
@@ -240,7 +329,13 @@ class EchoService:
                     "resource_version": 2,
                 }
             )
-            self.store.save("run", failed)
+            if self.activity is None:
+                self.store.save("run", failed)
+            else:
+                self.activity.complete_after_persist(
+                    str(run.id),
+                    lambda: self.store.save("run", failed),
+                )
             raise error from exc
         finally:
             report_path.unlink(missing_ok=True)
@@ -278,8 +373,15 @@ class EchoService:
                 "resource_version": 2,
             }
         )
-        self.store.save_outcome(result, gate, succeeded)
-        self.store.save_samples(samples)
+
+        def persist_outcome() -> None:
+            self.store.save_outcome(result, gate, succeeded)
+            self.store.save_samples(samples)
+
+        if self.activity is None:
+            persist_outcome()
+        else:
+            self.activity.complete_after_persist(str(run.id), persist_outcome)
         return succeeded
 
     def _binding_for(self, binding_id: str, suite: EvaluationSuite) -> RunnerBinding:
@@ -299,7 +401,12 @@ class EchoService:
         return binding
 
     def _engine_for(
-        self, binding: RunnerBinding, suite: EvaluationSuite
+        self,
+        binding: RunnerBinding,
+        suite: EvaluationSuite,
+        *,
+        trace_id: str | None = None,
+        span_id: str | None = None,
     ) -> EvaluationExecutionPort:
         """Select the runner declared by the binding; fail closed if unavailable. | 选引擎。"""
 
@@ -323,7 +430,12 @@ class EchoService:
                 retryable=True,
             )
         profile = self.get_judge_profile(suite.judge_profile_id)
-        return ExchangeJudgePort(profile, bearer_token=self.judge_bearer_token)
+        return ExchangeJudgePort(
+            profile,
+            bearer_token=self.judge_bearer_token,
+            trace_id=trace_id,
+            span_id=span_id,
+        )
 
     def _persist_samples(
         self,
@@ -413,6 +525,7 @@ class EchoService:
     # ──────────────────────────────────────────────────────────────────
     # SECTION: Per-sample review, human annotation, filtering
     # ──────────────────────────────────────────────────────────────────
+    # 中文:逐样本审核、人工标注与筛选。
 
     def list_samples(
         self,
@@ -512,6 +625,7 @@ class EchoService:
     # ──────────────────────────────────────────────────────────────────
     # SECTION: FeedbackSet + Catalyst-compatible export
     # ──────────────────────────────────────────────────────────────────
+    # 中文:FeedbackSet 与 Catalyst 兼容导出。
 
     def create_feedback_set(
         self, command: CreateFeedbackSetRequest, idempotency_key: str | None
@@ -614,6 +728,7 @@ class EchoService:
         feedback_set = self.get_feedback_set(feedback_set_id)
         if feedback_set.export_artifact is not None:
             # A selected export is immutable; later annotations need a new FeedbackSet.
+            # 中文:选定的导出不可变;后续标注必须创建新的 FeedbackSet。
             return feedback_set, self.artifacts.resolve(feedback_set.export_artifact).read_bytes()
         run = self.get_run(feedback_set.run_id)
         suite = self.get_suite(run.suite_id)

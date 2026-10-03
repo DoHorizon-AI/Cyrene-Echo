@@ -170,6 +170,7 @@ class _RejectingJudge(BaseHTTPRequestHandler):
 class _CatalystDouble(BaseHTTPRequestHandler):
     receipt: ClassVar[dict[str, Any] | None] = None
     requests: ClassVar[list[dict[str, Any]]] = []
+    response_status: ClassVar[int] = 201
 
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
@@ -182,7 +183,7 @@ class _CatalystDouble(BaseHTTPRequestHandler):
             }
         )
         assert _CatalystDouble.receipt is not None
-        _json_response(self, 201, _CatalystDouble.receipt)
+        _json_response(self, _CatalystDouble.response_status, _CatalystDouble.receipt)
 
     def log_message(self, format: str, *args: Any) -> None:
         return
@@ -191,6 +192,7 @@ class _CatalystDouble(BaseHTTPRequestHandler):
 # ════════════════════════════════════════════════════════════════════
 # SECTION: Runner profile and binding declarations
 # ════════════════════════════════════════════════════════════════════
+# 中文:Runner 配置文件与 binding 声明。
 def test_runner_bindings_are_explicit_and_mock_is_not_selectable() -> None:
     """Bindings declare owner profiles and grading; mocks stay test-only. | 绑定分级。"""
 
@@ -209,6 +211,7 @@ def test_runner_bindings_are_explicit_and_mock_is_not_selectable() -> None:
     )
     assert RunnerAcceptance.MOCK not in {binding.acceptance for binding in RUNNER_BINDINGS.values()}
     # Binding ids are Echo-local names; no fabricated capability id is selectable.
+    # 中文:Binding ID 是 Echo 本地名称;伪造的 capability ID 不可选用。
     assert all(not binding_id.startswith("evaluation.") for binding_id in RUNNER_BINDINGS)
     assert resolve_runner_binding("exchange-judge") is remote
 
@@ -312,6 +315,7 @@ def test_runner_binding_must_match_suite_evaluator(tmp_path: Path) -> None:
 # ════════════════════════════════════════════════════════════════════
 # SECTION: Exchange judge fail-closed
 # ════════════════════════════════════════════════════════════════════
+# 中文:Exchange judge 的 fail-closed 行为。
 def test_exchange_judge_unreachable_endpoint_fails_closed(tmp_path: Path) -> None:
     """A configured judge endpoint that is down must not fabricate scores. | 不可达判官。"""
 
@@ -376,6 +380,7 @@ def test_exchange_judge_rejection_fails_closed(tmp_path: Path) -> None:
 # ════════════════════════════════════════════════════════════════════
 # SECTION: Catalyst feedback handoff fail-closed
 # ════════════════════════════════════════════════════════════════════
+# 中文:Catalyst 反馈交接的 fail-closed 行为。
 def test_catalyst_handoff_requires_configured_endpoint(tmp_path: Path) -> None:
     """Without a configured Catalyst URL the handoff fails closed. | 未配置端点。"""
 
@@ -418,6 +423,7 @@ def test_catalyst_handoff_returns_owner_confirmed_receipt(tmp_path: Path) -> Non
 
     target_id = str(uuid4())
     _CatalystDouble.requests = []
+    _CatalystDouble.response_status = 201
     _CatalystDouble.receipt = {
         "status": "DRAFT",
         "targetResource": {
@@ -444,12 +450,93 @@ def test_catalyst_handoff_returns_owner_confirmed_receipt(tmp_path: Path) -> Non
             assert receipt["status"] == "DRAFT"
             assert receipt["targetResource"]["id"] == target_id
             assert receipt["openIn"] == f"{stub.url}/api/v1/preparations/{target_id}"
+            persisted = client.get(f"/api/v1/feedback-sets/{feedback_id}").json()
+            assert persisted["handoffStatus"] == "HANDLED_OFF"
+            assert persisted["resourceVersion"] == 3
+            replay = client.post(
+                f"/api/v1/feedback-sets/{feedback_id}/actions/send-to-catalyst", json={}
+            )
+            assert replay.json() == receipt
+            conflict = client.post(
+                f"/api/v1/feedback-sets/{feedback_id}/actions/send-to-catalyst",
+                json={"datasetId": str(uuid4())},
+            )
+            assert conflict.status_code == 409
+            assert conflict.json()["code"] == "ECHO_CATALYST_HANDOFF_CONFLICT"
         assert len(_CatalystDouble.requests) == 1
         request = _CatalystDouble.requests[0]
         assert request["path"] == "/api/v1/feedback-imports"
-        assert request["idempotency_key"] == f"echo-feedback:{feedback_id}"
+        assert request["idempotency_key"] == f"echo-feedback:{feedback_id}:2"
         assert request["body"]["sourceRef"]["uri"].startswith("cyrene://echo/feedback-sets/")
         assert request["body"]["artifact"]["kind"] == "dataset"
         _close(app)
+
+        restarted = create_app(
+            database_path=tmp_path / "echo.sqlite3",
+            artifact_root=tmp_path / "artifacts",
+        )
+        with TestClient(restarted) as client:
+            replay = client.post(
+                f"/api/v1/feedback-sets/{feedback_id}/actions/send-to-catalyst", json={}
+            )
+            assert replay.status_code == 200
+            assert replay.json() == receipt
+        assert len(_CatalystDouble.requests) == 1
+        _close(restarted)
     finally:
         stub.close()
+
+
+def test_catalyst_handoff_rejects_non_201_or_mismatched_target(tmp_path: Path) -> None:
+    """Only the owner's exact creation receipt may mark delivery. | 仅接受精确创建回执。"""
+
+    target_id = str(uuid4())
+    cases = [
+        (
+            200,
+            {
+                "status": "DRAFT",
+                "targetResource": {
+                    "uri": f"cyrene://catalyst/preparations/{target_id}",
+                    "id": target_id,
+                    "resourceVersion": 1,
+                },
+                "openIn": f"/api/v1/preparations/{target_id}",
+            },
+        ),
+        (
+            201,
+            {
+                "status": "DRAFT",
+                "targetResource": {
+                    "uri": f"cyrene://catalyst/preparations/{uuid4()}",
+                    "id": target_id,
+                    "resourceVersion": 1,
+                },
+                "openIn": f"/api/v1/preparations/{target_id}",
+            },
+        ),
+    ]
+    for index, (status, receipt) in enumerate(cases):
+        _CatalystDouble.requests = []
+        _CatalystDouble.response_status = status
+        _CatalystDouble.receipt = receipt
+        stub = _HttpStub(_CatalystDouble)
+        try:
+            app = create_app(
+                database_path=tmp_path / f"echo-{index}.sqlite3",
+                artifact_root=tmp_path / f"artifacts-{index}",
+                catalyst_url=stub.url,
+            )
+            with TestClient(app) as client:
+                feedback_id = _exported_feedback_set(client)
+                response = client.post(
+                    f"/api/v1/feedback-sets/{feedback_id}/actions/send-to-catalyst", json={}
+                )
+                assert response.status_code == 502
+                assert response.json()["code"] == "ECHO_CATALYST_HANDOFF_FAILED"
+                persisted = client.get(f"/api/v1/feedback-sets/{feedback_id}").json()
+                assert persisted["handoffStatus"] == "PREPARED"
+            _close(app)
+        finally:
+            stub.close()

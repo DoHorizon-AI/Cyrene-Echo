@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Any
@@ -42,26 +41,26 @@ from cyrene_echo.domain import (
     SampleRecord,
 )
 from cyrene_echo.engine import EchoArtifactPlane, EvaluationExecutionPort
-from cyrene_echo.errors import EchoError
+from cyrene_echo.errors import EchoError, EvaluationEngineFailure, map_echo_error
 from cyrene_echo.lifecycle import (
     EvaluateInput,
     HandoffReceipt,
     LifecycleActions,
     SendFeedback,
 )
+from cyrene_echo.logging import (
+    emit_diagnostic_error,
+    parse_w3c_traceparent,
+    sanitize_request_id,
+)
 from cyrene_echo.plugin_evaluation import evaluation_port_from_environment
 from cyrene_echo.service import EchoService
 from cyrene_echo.store import EchoStore
 from cyrene_echo.ui_page import INDEX_HTML
-
-_TRACEPARENT = re.compile(r"^00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$")
-
-
-def _incoming_trace_id(value: str) -> str | None:
-    match = _TRACEPARENT.fullmatch(value)
-    if match is None or match.group(1) == "0" * 32 or match.group(2) == "0" * 16:
-        return None
-    return match.group(1)
+from cyrene_echo.workspace_auth import (
+    WorkspaceServiceAuthenticator,
+    WorkspaceServicePrincipal,
+)
 
 
 def create_app(
@@ -71,6 +70,7 @@ def create_app(
     engine: EvaluationExecutionPort | None = None,
     judge_bearer_token: str | None = None,
     catalyst_url: str | None = None,
+    workspace_authenticator: WorkspaceServiceAuthenticator | None = None,
 ) -> FastAPI:
     """Build Echo with explicit persistence and evaluator adapters. | 创建 Echo 应用。"""
 
@@ -84,8 +84,18 @@ def create_app(
     app = FastAPI(title="Cyrene Echo Product API", version="1.0.0")
     app.state.echo_store = store
     app.state.echo_service = service
+    app.router.on_shutdown.append(service.close)
+    app.state.workspace_authenticator = (
+        workspace_authenticator or WorkspaceServiceAuthenticator.from_json(None)
+    )
     lifecycle = LifecycleActions(service, catalyst_url)
     app.state.echo_lifecycle = lifecycle
+
+    @app.get("/healthz", include_in_schema=False)
+    def healthz() -> dict[str, str]:
+        """Report process liveness to the container orchestrator. | 向容器编排器报告进程存活。"""
+
+        return {"status": "ok"}
 
     @app.post(
         "/api/v1/evaluation-inputs",
@@ -138,24 +148,107 @@ def create_app(
     async def propagate_trace(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        trace_id = _incoming_trace_id(request.headers.get("traceparent", "")) or uuid4().hex
+        parsed_trace = parse_w3c_traceparent(request.headers.get("traceparent"))
+        if parsed_trace:
+            trace_id, span_id = parsed_trace
+        else:
+            trace_id = uuid4().hex
+            span_id = "0000000000000001"
+
+        raw_req_id = request.headers.get("x-request-id")
+        request_id = sanitize_request_id(raw_req_id) or f"req-{uuid4().hex[:12]}"
+
         request.state.trace_id = trace_id
-        response = await call_next(request)
-        response.headers["traceparent"] = f"00-{trace_id}-0000000000000001-01"
+        request.state.span_id = span_id
+        request.state.request_id = request_id
+
+        response: Response
+        private_collection = "/internal/workspace/v1/evaluation-suites"
+        private_route = request.url.path == private_collection or request.url.path.startswith(
+            private_collection + "/"
+        )
+        if private_route and request.method in {"GET", "POST"}:
+            authenticator: WorkspaceServiceAuthenticator = app.state.workspace_authenticator
+            principal = authenticator.authenticate(request.headers.get("authorization"))
+            if not authenticator.configured or principal is None:
+                status = 503 if not authenticator.configured else 401
+                code = (
+                    "ECHO_WORKSPACE_AUTH_UNAVAILABLE"
+                    if status == 503
+                    else "ECHO_WORKSPACE_AUTHENTICATION_REQUIRED"
+                )
+                title = (
+                    "Workspace service authentication unavailable"
+                    if status == 503
+                    else "Workspace service authentication required"
+                )
+                detail = (
+                    "Workspace service credentials are not configured."
+                    if status == 503
+                    else "A valid Workspace service bearer token is required."
+                )
+                canonical_code = map_echo_error(code)["code"]
+                problem = ProblemDetails(
+                    type=f"https://errors.cyrene.dev/echo/{canonical_code.lower()}",
+                    title=title,
+                    status=status,
+                    detail=detail,
+                    instance=request.url.path,
+                    code=code,
+                    retryable=status == 503,
+                    trace_id=trace_id,
+                    request_id=request_id,
+                )
+                response = JSONResponse(
+                    status_code=status,
+                    content=problem.model_dump(by_alias=True, exclude_none=True, mode="json"),
+                    media_type="application/problem+json",
+                )
+                if status == 401:
+                    response.headers["WWW-Authenticate"] = "Bearer"
+            else:
+                request.state.workspace_service_principal = principal
+                response = await call_next(request)
+        else:
+            response = await call_next(request)
+        response.headers["traceparent"] = f"00-{trace_id}-{span_id}-01"
+        response.headers["x-request-id"] = request_id
         return response
 
     @app.exception_handler(EchoError)
     async def product_error(request: Request, exc: EchoError) -> JSONResponse:
+        mapping = map_echo_error(exc.code)
+        canonical_code = mapping["code"]
+        trace_id = getattr(request.state, "trace_id", None) or uuid4().hex
+        span_id = getattr(request.state, "span_id", "0000000000000001")
+        request_id = getattr(request.state, "request_id", None)
+        emit_diagnostic_error(
+            "echo.error",
+            canonical_code,
+            f"{exc.title}: {exc.detail}",
+            trace_id=trace_id,
+            span_id=span_id,
+            attributes={
+                "http.target": request.url.path,
+                "http.status_code": exc.status,
+                "request_id": request_id,
+                "cause_kind": mapping.get("cause_kind"),
+                "recovery_action": mapping.get("recovery_action"),
+                "legacy_code": exc.code,
+            },
+        )
         problem = ProblemDetails(
-            type=f"https://errors.cyrene.dev/echo/{exc.code.lower()}",
+            type=f"https://errors.cyrene.dev/echo/{canonical_code.lower()}",
             title=exc.title,
             status=exc.status,
             detail=exc.detail,
             instance=request.url.path,
             code=exc.code,
             retryable=exc.retryable,
-            trace_id=request.state.trace_id,
+            trace_id=trace_id,
             resource_ref=exc.resource_ref,
+            request_id=request_id,
+            recovery_action=mapping.get("recovery_action"),
         )
         return JSONResponse(
             status_code=exc.status,
@@ -163,8 +256,66 @@ def create_app(
             media_type="application/problem+json",
         )
 
+    @app.exception_handler(EvaluationEngineFailure)
+    async def engine_error(request: Request, _exc: EvaluationEngineFailure) -> JSONResponse:
+        mapping = map_echo_error("ECHO_ENGINE_FAILED")
+        canonical_code = mapping["code"]
+        trace_id = getattr(request.state, "trace_id", None) or uuid4().hex
+        span_id = getattr(request.state, "span_id", "0000000000000001")
+        request_id = getattr(request.state, "request_id", None)
+        emit_diagnostic_error(
+            "echo.engine_failure",
+            canonical_code,
+            "The evaluation execution engine failed.",
+            trace_id=trace_id,
+            span_id=span_id,
+            attributes={
+                "http.target": request.url.path,
+                "http.status_code": 500,
+                "request_id": request_id,
+                "cause_kind": mapping.get("cause_kind"),
+                "recovery_action": mapping.get("recovery_action"),
+            },
+        )
+        problem = ProblemDetails(
+            type="https://errors.cyrene.dev/echo/engine-failed",
+            title="Evaluation engine failed",
+            status=500,
+            detail="The evaluation engine failed to execute the run.",
+            instance=request.url.path,
+            code="ECHO_ENGINE_FAILED",
+            retryable=True,
+            trace_id=trace_id,
+            request_id=request_id,
+            recovery_action=mapping.get("recovery_action"),
+        )
+        return JSONResponse(
+            status_code=500,
+            content=problem.model_dump(by_alias=True, mode="json"),
+            media_type="application/problem+json",
+        )
+
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, _exc: RequestValidationError) -> JSONResponse:
+        mapping = map_echo_error("ECHO_REQUEST_INVALID")
+        canonical_code = mapping["code"]
+        trace_id = getattr(request.state, "trace_id", None) or uuid4().hex
+        span_id = getattr(request.state, "span_id", "0000000000000001")
+        request_id = getattr(request.state, "request_id", None)
+        emit_diagnostic_error(
+            "echo.validation_error",
+            canonical_code,
+            "The request does not conform to the Echo Product API v1 contract.",
+            trace_id=trace_id,
+            span_id=span_id,
+            attributes={
+                "http.target": request.url.path,
+                "http.status_code": 422,
+                "request_id": request_id,
+                "cause_kind": mapping.get("cause_kind"),
+                "recovery_action": mapping.get("recovery_action"),
+            },
+        )
         problem = ProblemDetails(
             type="https://errors.cyrene.dev/echo/request-invalid",
             title="Request validation failed",
@@ -173,7 +324,9 @@ def create_app(
             instance=request.url.path,
             code="ECHO_REQUEST_INVALID",
             retryable=False,
-            trace_id=request.state.trace_id,
+            trace_id=trace_id,
+            request_id=request_id,
+            recovery_action=mapping.get("recovery_action"),
         )
         return JSONResponse(
             status_code=422,
@@ -184,6 +337,7 @@ def create_app(
     # ────────────────────────────────────────────────────────────────
     # SECTION: Minimal session-feedback interface (HTML)
     # ────────────────────────────────────────────────────────────────
+    # 中文:最小会话反馈接口(HTML)。
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     def index_page() -> str:
         """Serve the minimal sample-list / score / filter / export page. | 最小界面。"""
@@ -193,6 +347,7 @@ def create_app(
     # ────────────────────────────────────────────────────────────────
     # SECTION: EvaluationSuite + JudgeProfile
     # ────────────────────────────────────────────────────────────────
+    # 中文:EvaluationSuite 与 JudgeProfile。
     @app.post(
         "/api/v1/evaluation-suites",
         response_model=EvaluationSuite,
@@ -205,9 +360,40 @@ def create_app(
     ) -> EvaluationSuite:
         return service.create_suite(command, idempotency_key)
 
+    @app.post(
+        "/internal/workspace/v1/evaluation-suites",
+        response_model=EvaluationSuite,
+        response_model_exclude_none=True,
+        status_code=201,
+        include_in_schema=False,
+    )
+    def create_workspace_suite(
+        request: Request,
+        command: CreateSuiteRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=200),
+    ) -> EvaluationSuite:
+        principal = request.state.workspace_service_principal
+        if not isinstance(principal, WorkspaceServicePrincipal):
+            raise RuntimeError("Workspace service principal missing after route authentication")
+        return service.create_workspace_suite(command, idempotency_key, principal)
+
     @app.get("/api/v1/evaluation-suites/{suiteId}", response_model=EvaluationSuite)
     def get_suite(suite_id: Annotated[UUID, ApiPath(alias="suiteId")]) -> EvaluationSuite:
         return service.get_suite(suite_id)
+
+    @app.get(
+        "/internal/workspace/v1/evaluation-suites/{suiteId}",
+        response_model=EvaluationSuite,
+        include_in_schema=False,
+    )
+    def get_workspace_suite(
+        request: Request,
+        suite_id: Annotated[UUID, ApiPath(alias="suiteId")],
+    ) -> EvaluationSuite:
+        principal = request.state.workspace_service_principal
+        if not isinstance(principal, WorkspaceServicePrincipal):
+            raise RuntimeError("Workspace service principal missing after route authentication")
+        return service.get_workspace_suite(suite_id, principal)
 
     @app.post(
         "/api/v1/judge-profiles",
@@ -234,6 +420,7 @@ def create_app(
     # ────────────────────────────────────────────────────────────────
     # SECTION: Session import + EvaluationRun execution
     # ────────────────────────────────────────────────────────────────
+    # 中文:会话导入与 EvaluationRun 执行。
     @app.post(
         "/api/v1/session-artifacts",
         response_model=ArtifactRef,
@@ -251,10 +438,16 @@ def create_app(
         status_code=201,
     )
     def create_run(
+        request: Request,
         command: CreateRunRequest,
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=200),
     ) -> EvaluationRun:
-        return service.create_run(command, idempotency_key)
+        return service.create_run(
+            command,
+            idempotency_key,
+            trace_id=request.state.trace_id,
+            span_id=request.state.span_id,
+        )
 
     @app.get(
         "/api/v1/evaluation-runs/{runId}",
@@ -275,6 +468,7 @@ def create_app(
     # ────────────────────────────────────────────────────────────────
     # SECTION: Per-sample review, human annotation, filtering
     # ────────────────────────────────────────────────────────────────
+    # 中文:逐样本审核、人工标注与筛选。
     @app.get(
         "/api/v1/evaluation-runs/{runId}/samples",
         response_model=list[SampleRecord],
@@ -327,6 +521,7 @@ def create_app(
     # ────────────────────────────────────────────────────────────────
     # SECTION: FeedbackSet + Catalyst-compatible export
     # ────────────────────────────────────────────────────────────────
+    # 中文:FeedbackSet 与 Catalyst 兼容导出。
     @app.post(
         "/api/v1/feedback-sets",
         response_model=FeedbackSet,

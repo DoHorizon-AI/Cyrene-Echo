@@ -74,15 +74,32 @@ GitHub Actions 是自动源码与产品契约检查的 `github` 权威，workflo
 [`ci.yml`](../.github/workflows/ci.yml) 与
 [`product-contract.yml`](../.github/workflows/product-contract.yml)。
 
-The Azure definition is a manual supplemental lane for deployment, protected
-resources, or private integration. It is not the automatic CI authority. No
-repository release workflow is present on the current branch; `github_releases`
-remains the planned release authority and `automated_release` is false until a
-maintainer-owned release workflow and read-back evidence exist.
+The `Immutable component release` GitHub Actions workflow publishes attested
+Echo component artifacts. The Azure definition remains a manual supplemental
+lane for protected resources or private integration; it is not the automatic
+CI authority. The Container Apps consumer updates the existing Echo app only
+after verifying the exact source-SHA index, manifest, OCI digest, and GitHub
+attestation.
 
-Azure 定义是部署、受保护资源或私有集成的手动补充通道，不是自动 CI 权威。当前分支没有
-仓库级 release workflow；`github_releases` 仍是计划中的发布权威，在维护者提供 release
-workflow 与回读证据前，`automated_release` 保持 false。
+`Immutable component release` GitHub Actions workflow 会发布带 attestation 的 Echo 组件制品。
+Azure 定义仍用于受保护资源或私有集成的手动补充通道，不是自动 CI 权威。Container Apps
+消费 workflow 只有在验证精确源码 SHA 对应的 index、manifest、OCI digest 与 GitHub attestation
+后，才会更新已有 Echo app。
+
+## 3.1 Immutable component delivery / 不可变组件交付
+
+Successful component-release runs on `main` and `release` use the stable
+channel; `develop` uses preview. The Azure workflow resolves the immutable
+release for the triggering commit and refuses a missing or mismatched release.
+Manual dispatch uses its current branch and commit under the same verification.
+It does not build or push an image, use a mutable tag, or create an Azure app.
+Existing Azure OIDC and Workspace-auth rollout gates, internal-ingress policy,
+and healthy-revision/image verification remain in force.
+
+`main` 和 `release` 上的成功组件发布运行使用 stable channel；`develop` 使用 preview。Azure
+workflow 按触发提交查找不可变 release；release 缺失或不匹配时会拒绝部署。手动触发也会按当前
+分支和提交执行相同验证。它不会构建或推送镜像、使用可变 tag 或创建 Azure app。现有 Azure
+OIDC 与 Workspace-auth rollout 门禁、内网 ingress 策略，以及健康 revision/镜像验证均保持不变。
 
 ## 4. Public-source boundary / 公开源码边界
 
