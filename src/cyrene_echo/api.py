@@ -56,6 +56,7 @@ from cyrene_echo.logging import (
 from cyrene_echo.plugin_evaluation import evaluation_port_from_environment
 from cyrene_echo.service import EchoService
 from cyrene_echo.store import EchoStore
+from cyrene_echo.trial_auth import install_trial_auth, trial_principal_from_request
 from cyrene_echo.ui_page import INDEX_HTML
 from cyrene_echo.workspace_auth import (
     WorkspaceServiceAuthenticator,
@@ -71,6 +72,8 @@ def create_app(
     judge_bearer_token: str | None = None,
     catalyst_url: str | None = None,
     workspace_authenticator: WorkspaceServiceAuthenticator | None = None,
+    trial_authenticator: WorkspaceServiceAuthenticator | None = None,
+    trial_auth_required: bool = False,
 ) -> FastAPI:
     """Build Echo with explicit persistence and evaluator adapters. | 创建 Echo 应用。"""
 
@@ -82,6 +85,11 @@ def create_app(
         judge_bearer_token=judge_bearer_token,
     )
     app = FastAPI(title="Cyrene Echo Product API", version="1.0.0")
+    install_trial_auth(
+        app,
+        authenticator=trial_authenticator,
+        required=trial_auth_required,
+    )
     app.state.echo_store = store
     app.state.echo_service = service
     app.router.on_shutdown.append(service.close)
@@ -104,45 +112,60 @@ def create_app(
         response_model_exclude_none=True,
     )
     def import_input(
+        request: Request,
         command: ImportEvaluationInput,
         idempotency_key: str | None = Header(default=None, max_length=200),
     ) -> EvaluationInput:
-        return lifecycle.import_input(command, idempotency_key)
+        return lifecycle.import_input(
+            command, idempotency_key, trial_principal_from_request(request)
+        )
 
     @app.get(
         "/api/v1/evaluation-inputs",
         response_model=list[EvaluationInput],
         response_model_exclude_none=True,
     )
-    def list_inputs() -> list[EvaluationInput]:
-        return store.list_inputs()
+    def list_inputs(request: Request) -> list[EvaluationInput]:
+        return store.list_inputs(trial_principal_from_request(request))
 
     @app.get(
         "/api/v1/evaluation-inputs/{input_id}",
         response_model=EvaluationInput,
         response_model_exclude_none=True,
     )
-    def get_input(input_id: UUID) -> EvaluationInput:
-        return lifecycle.get_input(input_id)
+    def get_input(input_id: UUID, request: Request) -> EvaluationInput:
+        return lifecycle.get_input(input_id, trial_principal_from_request(request))
 
     @app.get("/api/v1/evaluation-inputs/{input_id}/samples")
-    def preview_input(input_id: UUID) -> dict[str, Any]:
-        return lifecycle.preview(input_id)
+    def preview_input(input_id: UUID, request: Request) -> dict[str, Any]:
+        return lifecycle.preview(input_id, trial_principal_from_request(request))
 
     @app.post(
         "/api/v1/evaluation-inputs/{input_id}/actions/evaluate",
         response_model=EvaluationRun,
         status_code=201,
     )
-    def evaluate_input(input_id: UUID, command: EvaluateInput) -> EvaluationRun:
-        return lifecycle.evaluate(input_id, command)
+    def evaluate_input(
+        input_id: UUID,
+        command: EvaluateInput,
+        request: Request,
+        idempotency_key: str | None = Header(
+            default=None, alias="Idempotency-Key", min_length=1, max_length=200
+        ),
+    ) -> EvaluationRun:
+        return lifecycle.evaluate(
+            input_id,
+            command,
+            trial_principal_from_request(request),
+            idempotency_key,
+        )
 
     @app.post(
         "/api/v1/feedback-sets/{feedback_id}/actions/send-to-catalyst",
         response_model=HandoffReceipt,
     )
-    def send_feedback(feedback_id: UUID, command: SendFeedback) -> HandoffReceipt:
-        return lifecycle.send_feedback(feedback_id, command)
+    def send_feedback(feedback_id: UUID, command: SendFeedback, request: Request) -> HandoffReceipt:
+        return lifecycle.send_feedback(feedback_id, command, trial_principal_from_request(request))
 
     @app.middleware("http")
     async def propagate_trace(
@@ -355,10 +378,11 @@ def create_app(
         status_code=201,
     )
     def create_suite(
+        request: Request,
         command: CreateSuiteRequest,
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=200),
     ) -> EvaluationSuite:
-        return service.create_suite(command, idempotency_key)
+        return service.create_suite(command, idempotency_key, trial_principal_from_request(request))
 
     @app.post(
         "/internal/workspace/v1/evaluation-suites",
@@ -378,8 +402,10 @@ def create_app(
         return service.create_workspace_suite(command, idempotency_key, principal)
 
     @app.get("/api/v1/evaluation-suites/{suiteId}", response_model=EvaluationSuite)
-    def get_suite(suite_id: Annotated[UUID, ApiPath(alias="suiteId")]) -> EvaluationSuite:
-        return service.get_suite(suite_id)
+    def get_suite(
+        suite_id: Annotated[UUID, ApiPath(alias="suiteId")], request: Request
+    ) -> EvaluationSuite:
+        return service.get_suite(suite_id, trial_principal_from_request(request))
 
     @app.get(
         "/internal/workspace/v1/evaluation-suites/{suiteId}",
@@ -447,6 +473,7 @@ def create_app(
             idempotency_key,
             trace_id=request.state.trace_id,
             span_id=request.state.span_id,
+            principal=trial_principal_from_request(request),
         )
 
     @app.get(
@@ -454,16 +481,36 @@ def create_app(
         response_model=EvaluationRun,
         response_model_exclude_none=True,
     )
-    def get_run(run_id: Annotated[UUID, ApiPath(alias="runId")]) -> EvaluationRun:
-        return service.get_run(run_id)
+    def get_run(run_id: Annotated[UUID, ApiPath(alias="runId")], request: Request) -> EvaluationRun:
+        return service.get_run(run_id, trial_principal_from_request(request))
 
     @app.get("/api/v1/evaluation-results/{resultId}", response_model=EvaluationResult)
-    def get_result(result_id: Annotated[UUID, ApiPath(alias="resultId")]) -> EvaluationResult:
-        return service.get_result(result_id)
+    def get_result(
+        result_id: Annotated[UUID, ApiPath(alias="resultId")], request: Request
+    ) -> EvaluationResult:
+        return service.get_result(result_id, trial_principal_from_request(request))
+
+    @app.get(
+        "/api/v1/evaluation-results/{resultId}/export",
+        response_class=Response,
+        responses={200: {"content": {"application/json": {}}}},
+    )
+    def download_evaluation_report(
+        result_id: Annotated[UUID, ApiPath(alias="resultId")],
+        request: Request,
+    ) -> Response:
+        payload = service.export_result_report(result_id, trial_principal_from_request(request))
+        return Response(
+            content=payload,
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="evaluation-{result_id}.json"'},
+        )
 
     @app.get("/api/v1/gate-decisions/{gateId}", response_model=GateDecision)
-    def get_gate(gate_id: Annotated[UUID, ApiPath(alias="gateId")]) -> GateDecision:
-        return service.get_gate(gate_id)
+    def get_gate(
+        gate_id: Annotated[UUID, ApiPath(alias="gateId")], request: Request
+    ) -> GateDecision:
+        return service.get_gate(gate_id, trial_principal_from_request(request))
 
     # ────────────────────────────────────────────────────────────────
     # SECTION: Per-sample review, human annotation, filtering
@@ -474,6 +521,7 @@ def create_app(
         response_model=list[SampleRecord],
     )
     def list_samples(
+        request: Request,
         run_id: Annotated[UUID, ApiPath(alias="runId")],
         only_passed: bool | None = Query(default=None),
         only_annotated: bool | None = Query(default=None),
@@ -486,6 +534,7 @@ def create_app(
             only_annotated=only_annotated,
             limit=limit,
             offset=offset,
+            principal=trial_principal_from_request(request),
         )
 
     @app.get(
@@ -493,10 +542,11 @@ def create_app(
         response_model=SampleRecord,
     )
     def get_sample(
+        request: Request,
         run_id: Annotated[UUID, ApiPath(alias="runId")],
         sample_index: Annotated[int, ApiPath(alias="sampleIndex", ge=1)],
     ) -> SampleRecord:
-        return service.get_sample(run_id, sample_index)
+        return service.get_sample(run_id, sample_index, trial_principal_from_request(request))
 
     @app.post(
         "/api/v1/evaluation-runs/{runId}/annotations",
@@ -504,19 +554,21 @@ def create_app(
         status_code=201,
     )
     def annotate_sample(
+        request: Request,
         run_id: Annotated[UUID, ApiPath(alias="runId")],
         command: CreateAnnotationRequest,
     ) -> HumanAnnotation:
-        return service.annotate_sample(run_id, command)
+        return service.annotate_sample(run_id, command, trial_principal_from_request(request))
 
     @app.get(
         "/api/v1/evaluation-runs/{runId}/annotations",
         response_model=list[HumanAnnotation],
     )
     def list_annotations(
+        request: Request,
         run_id: Annotated[UUID, ApiPath(alias="runId")],
     ) -> list[HumanAnnotation]:
-        return service.list_annotations(run_id)
+        return service.list_annotations(run_id, trial_principal_from_request(request))
 
     # ────────────────────────────────────────────────────────────────
     # SECTION: FeedbackSet + Catalyst-compatible export
@@ -528,28 +580,33 @@ def create_app(
         status_code=201,
     )
     def create_feedback_set(
+        request: Request,
         command: CreateFeedbackSetRequest,
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=200),
     ) -> FeedbackSet:
-        return service.create_feedback_set(command, idempotency_key)
+        return service.create_feedback_set(
+            command, idempotency_key, trial_principal_from_request(request)
+        )
 
     @app.get(
         "/api/v1/feedback-sets/{feedbackSetId}",
         response_model=FeedbackSet,
     )
     def get_feedback_set(
+        request: Request,
         feedback_set_id: Annotated[UUID, ApiPath(alias="feedbackSetId")],
     ) -> FeedbackSet:
-        return service.get_feedback_set(feedback_set_id)
+        return service.get_feedback_set(feedback_set_id, trial_principal_from_request(request))
 
     @app.get(
         "/api/v1/feedback-sets",
         response_model=list[FeedbackSet],
     )
     def list_feedback_sets(
+        request: Request,
         run_id: Annotated[UUID | None, Query(alias="runId")] = None,
     ) -> list[FeedbackSet]:
-        return service.list_feedback_sets(run_id)
+        return service.list_feedback_sets(run_id, trial_principal_from_request(request))
 
     @app.post(
         "/api/v1/feedback-sets/{feedbackSetId}/export",
@@ -557,9 +614,12 @@ def create_app(
         response_model_exclude_none=True,
     )
     def export_feedback_set(
+        request: Request,
         feedback_set_id: Annotated[UUID, ApiPath(alias="feedbackSetId")],
     ) -> ExportFeedbackSetResponse:
-        feedback_set, _payload = service.export_feedback_set(feedback_set_id)
+        feedback_set, _payload = service.export_feedback_set(
+            feedback_set_id, trial_principal_from_request(request)
+        )
         return ExportFeedbackSetResponse(
             feedback_set=feedback_set,
             export_artifact=feedback_set.export_artifact,  # type: ignore[arg-type]
@@ -572,9 +632,12 @@ def create_app(
         response_class=Response,
     )
     def download_feedback_set(
+        request: Request,
         feedback_set_id: Annotated[UUID, ApiPath(alias="feedbackSetId")],
     ) -> Response:
-        feedback_set, payload = service.export_feedback_set(feedback_set_id)
+        feedback_set, payload = service.export_feedback_set(
+            feedback_set_id, trial_principal_from_request(request)
+        )
         return Response(
             content=payload,
             media_type="application/jsonl",

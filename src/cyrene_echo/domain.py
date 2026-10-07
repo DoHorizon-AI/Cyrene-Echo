@@ -15,7 +15,7 @@ from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -395,9 +395,29 @@ class ImportEvaluationInput(ContractModel):
 
     source_ref: ProductResourceRef
     artifact: ArtifactRef
-    format: Literal["NAVIGATOR_TEXT_JSONL_V1"]
+    format: Literal["NAVIGATOR_TEXT_JSONL_V1", "CYRENE_REFERENCE_ACTUAL_JSONL_V1"]
     content_refs: list[str] = Field(min_length=1, max_length=2000)
     provenance_refs: list[str] = Field(default_factory=list, max_length=100)
+    target_dataset_version: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=2000,
+        pattern=r"^catalyst://[^\s]+$",
+    )
+    target_package_artifact: ArtifactRef | None = None
+
+    @model_validator(mode="after")
+    def require_target_for_reference_actual(self) -> ImportEvaluationInput:
+        """Bind the general evaluation format to the exact target package and version."""
+
+        if self.format == "CYRENE_REFERENCE_ACTUAL_JSONL_V1" and (
+            self.target_dataset_version is None or self.target_package_artifact is None
+        ):
+            raise ValueError(
+                "CYRENE_REFERENCE_ACTUAL_JSONL_V1 requires targetDatasetVersion "
+                "and targetPackageArtifact."
+            )
+        return self
 
 
 class EvaluationInput(ImportEvaluationInput):
