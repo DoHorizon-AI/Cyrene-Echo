@@ -101,6 +101,17 @@ HTTP 201 receipt whose target is exactly
 `HANDLED_OFF` transition, and returns that receipt on identical retries after
 restart. Missing Catalyst fields should be requested explicitly rather than
 reinventing a global protocol.
+
+## Target-bound data tools evaluation
+
+`POST /api/v1/evaluation-inputs` retains the legacy
+`NAVIGATOR_TEXT_JSONL_V1` format and also accepts
+`CYRENE_REFERENCE_ACTUAL_JSONL_V1`, bound to `targetDatasetVersion` and
+`targetPackageArtifact`. `GET /api/v1/evaluation-results/{resultId}/export`
+returns the versioned JSON shape in `evaluation-report.schema.json`, including
+evaluator identity, coverage, per-sample statuses, failures, skips, and exact
+package/input digests. Rows without reference or actual values are skipped; an
+evaluation with no evaluable rows is rejected.
 ---
 <!-- Chinese Translation / 中文翻译 -->
 
@@ -150,6 +161,14 @@ API 根路径为 `/api/v1`，使用 Workspace 的 `product-http-v1` 兼容配置
 ## Catalyst 交接契约
 
 Echo 将 `FeedbackSet` 导出为 kind 为 `dataset` 的 JSONL `ArtifactRef`。每行是一个 `TrainingCandidateRow`，包含 `instruction`、`output`、`input`、偏好样本对可选的 `rejectedOutput`，以及来源信息（`sourceRunId`、`sourceSampleIndex`、`sourceKind`、`evaluator`、`modelRef`、`annotatedBy`）。Catalyst 通过 `FeedbackImportRequest` 接收相同的 `ArtifactRef` 形状；Catalyst 的 `MappingConfig` 使用 `instruction`/`output`/`input`，忽略来源字段。Echo 要求 HTTP 201 回执，且目标必须精确为 `cyrene://catalyst/preparations/{id}`；它会将回执与 `HANDLED_OFF` 状态转换原子持久化，并在重启后对相同重试返回该回执。若 Catalyst 缺少字段，应显式提出请求，不要另造全局协议。
+
+## 绑定目标的数据工具评估
+
+`POST /api/v1/evaluation-inputs` 继续接受旧格式
+`NAVIGATOR_TEXT_JSONL_V1`，并新增 `CYRENE_REFERENCE_ACTUAL_JSONL_V1`；新格式必须绑定
+`targetDatasetVersion` 和 `targetPackageArtifact`。报告下载路由
+`GET /api/v1/evaluation-results/{resultId}/export` 返回
+`evaluation-report.schema.json` 定义的版本化 JSON，包括评估器身份、覆盖率、逐样本状态、失败、跳过及精确的 package/input 摘要。缺少 reference 或 actual 的记录会跳过；没有可评估记录时请求会被拒绝。
 
 ## Product operation catalog v2
 

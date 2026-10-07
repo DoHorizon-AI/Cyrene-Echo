@@ -19,12 +19,16 @@ import uvicorn
 
 from cyrene_echo.api import create_app
 from cyrene_echo.store import EchoStore
+from cyrene_echo.trial_auth import (
+    TrialAuthConfigError,
+    is_loopback_host,
+    trial_authenticator_from_environment,
+    validate_trial_listener,
+)
 from cyrene_echo.workspace_auth import (
     WorkspaceServiceAuthConfigError,
     WorkspaceServiceAuthenticator,
 )
-
-LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 def _validated_serve_arguments(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
@@ -36,7 +40,7 @@ def _validated_serve_arguments(parser: argparse.ArgumentParser, args: argparse.N
 
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
-    if args.host not in LOOPBACK_HOSTS and not args.allow_remote:
+    if not is_loopback_host(args.host) and not args.allow_remote:
         parser.error("non-loopback listeners require --allow-remote and an external TLS terminator")
     parent = args.database.expanduser().resolve().parent
     if not parent.is_dir():
@@ -96,6 +100,18 @@ def main() -> None:
     if args.command == "run":
         raise SystemExit(_run_show(args))
     _validated_serve_arguments(parser_instance, args)
+    try:
+        trial_authenticator = trial_authenticator_from_environment()
+    except TrialAuthConfigError as exc:
+        parser_instance.error(str(exc))
+    try:
+        remote_listener = validate_trial_listener(
+            args.host,
+            allow_remote=args.allow_remote,
+            authenticator=trial_authenticator,
+        )
+    except TrialAuthConfigError as exc:
+        parser_instance.error(str(exc))
     token = os.environ.get(args.judge_token_env) if args.judge_token_env else None
     if args.judge_token_env and not token:
         parser_instance.error("The configured judge credential variable is empty")
@@ -111,6 +127,8 @@ def main() -> None:
         catalyst_url=args.catalyst_url,
         judge_bearer_token=token,
         workspace_authenticator=workspace_authenticator,
+        trial_authenticator=trial_authenticator,
+        trial_auth_required=remote_listener,
     )
     uvicorn.run(app, host=args.host, port=args.port, access_log=False)
 

@@ -64,6 +64,59 @@ Test doubles are `MOCK` and are never selectable runtime bindings.
 The run state is `RUNNING -> SUCCEEDED | FAILED | CANCELLED`. A poor score is
 a successful run with a failing gate; execution failure is a failed run.
 
+## Standalone target evaluation
+
+The independent data-tools trial accepts a general reference/actual JSONL
+snapshot without a Navigator session. Upload bytes with
+`POST /api/v1/session-artifacts`, then import the returned `ArtifactRef` at
+`POST /api/v1/evaluation-inputs` using
+`format: "CYRENE_REFERENCE_ACTUAL_JSONL_V1"`. Each row has a unique, stable
+`sampleId` and may carry string `reference` and `actual` values. The import also
+binds `targetDatasetVersion` (a Catalyst resource URI) and
+`targetPackageArtifact` (an `ArtifactRef`). Create an exact-match suite with
+`expectedField: "reference"` and `actualField: "actual"`, then evaluate the
+input through `POST /api/v1/evaluation-inputs/{inputId}/actions/evaluate` and
+`engineBindingId: "exact-match-plugin"`. Supply `Idempotency-Key` on the
+action when a failed or interrupted run must be retried; reusing the same key
+replays its original run.
+
+Rows without a non-null reference or actual value are `SKIPPED` with
+`MISSING_REFERENCE` or `MISSING_ACTUAL`. They do not enter the metric
+denominator. If every row is skipped, Echo returns `422 NO_EVALUABLE_SAMPLES`
+and creates no result or numeric score. The report is available as bytes from
+`GET /api/v1/evaluation-results/{resultId}/export`; it binds the target version,
+target package digest, input digest, evaluator identity/version, exact-match
+metric, coverage, and per-sample status without copying reference or actual
+values. The `failures` and `skips` arrays summarize the corresponding sample
+statuses.
+
+Evaluation remains synchronous and bounded. Echo has no run-cancel endpoint.
+On process startup, a persisted `RUNNING` run is terminalized as
+`FAILED/ECHO_RUN_INTERRUPTED_ON_RESTART`; inspect its failure and start a new
+run with a fresh `Idempotency-Key` to retry.
+
+独立 data-tools 试用可以直接导入 reference/actual JSONL，无需 Navigator 会话。先通过
+`POST /api/v1/session-artifacts` 上传原始字节，再将返回的 `ArtifactRef` 以
+`format: "CYRENE_REFERENCE_ACTUAL_JSONL_V1"` 交给
+`POST /api/v1/evaluation-inputs`。每行包含唯一且稳定的 `sampleId`，并可携带 JSON
+`reference` 和 `actual` 字符串。导入同时绑定 `targetDatasetVersion`（Catalyst 资源 URI）和
+`targetPackageArtifact`（`ArtifactRef`）。创建 `expectedField: "reference"`、
+`actualField: "actual"` 的 exact-match suite 后，通过
+`POST /api/v1/evaluation-inputs/{inputId}/actions/evaluate` 与
+`engineBindingId: "exact-match-plugin"` 执行。重试失败或中断的 run 时需传入新的
+`Idempotency-Key`；复用同一个 key 会重放原始 run。
+
+缺少非 null reference 或 actual 的行标记为 `SKIPPED`，错误码分别为
+`MISSING_REFERENCE` 或 `MISSING_ACTUAL`，且不进入指标分母。如果所有行都被跳过，Echo
+返回 `422 NO_EVALUABLE_SAMPLES`，不创建结果或数值评分。通过
+`GET /api/v1/evaluation-results/{resultId}/export` 获取报告字节。报告绑定目标版本、目标包
+摘要、输入摘要、评估器身份/版本、exact-match 指标、覆盖率和逐样本状态，不复制 reference
+或 actual 内容。`failures` 与 `skips` 数组汇总相应的逐样本状态。
+
+评估保持有界同步执行。Echo 没有 run-cancel 接口。进程启动时，已持久化的 `RUNNING` run
+会被终结为 `FAILED/ECHO_RUN_INTERRUPTED_ON_RESTART`；检查失败信息后，使用新的
+`Idempotency-Key` 创建 run 以重试。
+
 ## Direct Product handoffs
 
 Echo reads a source reference supplied by Navigator or another Product and

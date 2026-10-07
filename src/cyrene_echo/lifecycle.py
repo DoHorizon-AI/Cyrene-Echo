@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from threading import RLock
 from typing import Any, Literal
 from uuid import UUID, uuid4
@@ -30,7 +31,8 @@ from cyrene_echo.domain import (
     utc_now,
 )
 from cyrene_echo.errors import EchoError
-from cyrene_echo.service import EchoService
+from cyrene_echo.service import EchoService, EvaluationReportContext, EvaluationReportSample
+from cyrene_echo.workspace_auth import WorkspaceServicePrincipal
 
 
 class HandoffReceipt(ContractModel):
@@ -76,7 +78,12 @@ class LifecycleActions:
         self.client = client or httpx.Client(timeout=30, trust_env=False)
         self.lock = RLock()
 
-    def import_input(self, command: ImportEvaluationInput, key: str | None) -> EvaluationInput:
+    def import_input(
+        self,
+        command: ImportEvaluationInput,
+        key: str | None,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> EvaluationInput:
         path = self.service.artifacts.resolve(command.artifact)
         if not path.is_file() or path.stat().st_size > 16 * 1024**2:
             raise EchoError(
@@ -89,7 +96,9 @@ class LifecycleActions:
         # on its declared format and verified content instead of a shared vocabulary.
         # 中文:Artifact kind 是由生产方拥有的类别,因此依据声明的格式和已验证内容接受快照,
         # 而不是使用共享词汇表。
-        self._rows(command.artifact)
+        self._read_rows(command.artifact, command.format)
+        if command.target_package_artifact is not None:
+            self.service.artifacts.resolve(command.target_package_artifact)
         identifier = uuid4()
         digest = hashlib.sha256(command.model_dump_json().encode()).hexdigest()
         resource = EvaluationInput(
@@ -102,10 +111,16 @@ class LifecycleActions:
             ),
             created_at=utc_now(),
         )
-        return self.service.store.create_input(resource, key or "snapshot:" + digest, digest)
+        return self.service.store.create_input(
+            resource, key or "snapshot:" + digest, digest, principal
+        )
 
-    def get_input(self, identifier: UUID) -> EvaluationInput:
-        resource = self.service.store.get_input(identifier)
+    def get_input(
+        self,
+        identifier: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> EvaluationInput:
+        resource = self.service.store.get_input(identifier, principal)
         if resource is None:
             raise EchoError(
                 code="ECHO_INPUT_NOT_FOUND",
@@ -115,7 +130,11 @@ class LifecycleActions:
             )
         return resource
 
-    def _rows(self, artifact: ArtifactRef) -> list[dict[str, Any]]:
+    def _read_rows(
+        self, artifact: ArtifactRef, format_name: str
+    ) -> list[dict[str, Any]]:
+        """Read and validate either a legacy Navigator snapshot or generic JSONL."""
+
         try:
             rows = [
                 json.loads(line)
@@ -127,35 +146,176 @@ class LifecycleActions:
                 or len(rows) > 1000
                 or any(
                     not isinstance(row, dict)
-                    or not isinstance(row.get("instruction"), str)
-                    or not isinstance(row.get("output"), str)
                     for row in rows
                 )
             ):
                 raise ValueError("unsupported text snapshot")
+            if format_name == "NAVIGATOR_TEXT_JSONL_V1":
+                if any(
+                    not isinstance(row.get("instruction"), str)
+                    or not isinstance(row.get("output"), str)
+                    for row in rows
+                ):
+                    raise ValueError("unsupported Navigator text snapshot")
+            elif format_name == "CYRENE_REFERENCE_ACTUAL_JSONL_V1":
+                sample_ids: set[str] = set()
+                for row in rows:
+                    sample_id = row.get("sampleId")
+                    if (
+                        not isinstance(sample_id, str)
+                        or not sample_id.strip()
+                        or len(sample_id) > 500
+                        or sample_id in sample_ids
+                    ):
+                        raise ValueError("invalid or duplicate sampleId")
+                    sample_ids.add(sample_id)
+                    if any(
+                        field in row and row[field] is not None and not isinstance(row[field], str)
+                        for field in ("reference", "actual")
+                    ):
+                        raise ValueError("reference and actual must be strings when present")
+            else:
+                raise ValueError("unsupported evaluation input format")
             return rows
         except (ValueError, UnicodeError, OSError) as exc:
+            detail = (
+                "Expected one to 1000 JSONL objects with unique sampleId values and optional "
+                "string reference and actual fields."
+                if format_name == "CYRENE_REFERENCE_ACTUAL_JSONL_V1"
+                else "Expected one to 1000 text JSONL rows with instruction and output fields."
+            )
             raise EchoError(
                 code="ECHO_INPUT_INVALID",
                 title="Invalid evaluation input",
-                detail="Expected one to 1000 text JSONL rows with instruction and output fields.",
+                detail=detail,
                 status=422,
             ) from exc
 
-    def preview(self, identifier: UUID) -> dict[str, Any]:
-        rows = self._rows(self.get_input(identifier).artifact)
+    def preview(
+        self,
+        identifier: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> dict[str, Any]:
+        resource = self.get_input(identifier, principal)
+        rows = self._read_rows(resource.artifact, resource.format)
         return {
             "items": [{"sampleIndex": index + 1, "record": row} for index, row in enumerate(rows)],
             "total": len(rows),
         }
 
-    def evaluate(self, identifier: UUID, command: EvaluateInput) -> EvaluationRun:
+    def evaluate(
+        self,
+        identifier: UUID,
+        command: EvaluateInput,
+        principal: WorkspaceServicePrincipal | None = None,
+        idempotency_key: str | None = None,
+    ) -> EvaluationRun:
         with self.lock:
-            resource = self.get_input(identifier)
+            resource = self.get_input(identifier, principal)
             artifact = resource.artifact
+            report_context: EvaluationReportContext | None = None
+            engine_source_path: Path | None = None
+            rows = self._read_rows(artifact, resource.format)
+            if resource.format == "CYRENE_REFERENCE_ACTUAL_JSONL_V1":
+                if command.reference_answers:
+                    raise EchoError(
+                        code="ECHO_REFERENCE_ANSWER_INVALID",
+                        title="Reference answers are immutable",
+                        detail=(
+                            "Provide reference values in the imported JSONL rows for the "
+                            "CYRENE_REFERENCE_ACTUAL_JSONL_V1 format."
+                        ),
+                        status=422,
+                    )
+                suite = self.service.get_suite(command.suite_id, principal)
+                if (
+                    suite.evaluator != "exact_match.v1"
+                    or command.engine_binding_id != "exact-match-plugin"
+                ):
+                    raise EchoError(
+                        code="ECHO_REFERENCE_ACTUAL_REQUIRES_EXACT_MATCH",
+                        title="Exact-match evaluator required",
+                        detail=(
+                            "CYRENE_REFERENCE_ACTUAL_JSONL_V1 runs through the exact-match "
+                            "Plugins evaluator."
+                        ),
+                        status=422,
+                    )
+                if (suite.expected_field, suite.actual_field) != ("reference", "actual"):
+                    raise EchoError(
+                        code="ECHO_REFERENCE_ACTUAL_FIELDS_REQUIRED",
+                        title="EvaluationSuite fields do not match the input format",
+                        detail=(
+                            "Use expectedField 'reference' and actualField 'actual' for "
+                            "CYRENE_REFERENCE_ACTUAL_JSONL_V1."
+                        ),
+                        status=422,
+                    )
+
+                report_samples: list[EvaluationReportSample] = []
+                evaluable_rows: list[dict[str, Any]] = []
+                for sample_index, row in enumerate(rows, start=1):
+                    sample_id = str(row["sampleId"])
+                    if row.get("reference") is None:
+                        report_samples.append(
+                            EvaluationReportSample(
+                                sample_id=sample_id,
+                                sample_index=sample_index,
+                                status="SKIPPED",
+                                code="MISSING_REFERENCE",
+                                message="No reference value was supplied for this sample.",
+                            )
+                        )
+                    elif row.get("actual") is None:
+                        report_samples.append(
+                            EvaluationReportSample(
+                                sample_id=sample_id,
+                                sample_index=sample_index,
+                                status="SKIPPED",
+                                code="MISSING_ACTUAL",
+                                message="No actual value was supplied for this sample.",
+                            )
+                        )
+                    else:
+                        report_samples.append(
+                            EvaluationReportSample(
+                                sample_id=sample_id,
+                                sample_index=sample_index,
+                                status="EVALUATED",
+                            )
+                        )
+                        evaluable_rows.append(row)
+
+                if not evaluable_rows:
+                    raise EchoError(
+                        code="NO_EVALUABLE_SAMPLES",
+                        title="No evaluable samples",
+                        detail=(
+                            "No sample contains both a reference and an actual value. "
+                            "Missing references were skipped and no score was created."
+                        ),
+                        status=422,
+                    )
+                engine_source_path = self.service.artifacts.stage_path(
+                    f"{uuid4()}.evaluation-input.jsonl"
+                )
+                engine_source_path.write_text(
+                    "\n".join(
+                        json.dumps(row, ensure_ascii=False, sort_keys=True)
+                        for row in evaluable_rows
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                assert resource.target_dataset_version is not None
+                assert resource.target_package_artifact is not None
+                report_context = EvaluationReportContext(
+                    target_dataset_version=resource.target_dataset_version,
+                    target_package_digest=resource.target_package_artifact.digest,
+                    samples=tuple(report_samples),
+                )
             if command.reference_answers:
-                suite = self.service.get_suite(command.suite_id)
-                rows = self._rows(artifact)
+                suite = self.service.get_suite(command.suite_id, principal)
                 if any(
                     index < 1 or index > len(rows) or not value or len(value) > 10000
                     for index, value in command.reference_answers.items()
@@ -180,27 +340,39 @@ class LifecycleActions:
                     "\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n"
                 ).encode()
                 artifact = self.service.artifacts.publish_bytes(payload, kind="dataset")
-            run = self.service.create_run(
-                CreateRunRequest(
-                    suite_id=command.suite_id,
-                    input_artifact=artifact,
-                    engine_binding_id=command.engine_binding_id,
-                ),
-                "evaluation-input:" + str(identifier),
-            )
+            try:
+                run = self.service.create_run(
+                    CreateRunRequest(
+                        suite_id=command.suite_id,
+                        input_artifact=artifact,
+                        engine_binding_id=command.engine_binding_id,
+                    ),
+                    idempotency_key or "evaluation-input:" + str(identifier),
+                    engine_source_path=engine_source_path,
+                    report_context=report_context,
+                    principal=principal,
+                )
+            finally:
+                if engine_source_path is not None:
+                    engine_source_path.unlink(missing_ok=True)
             resource.state = "STARTED"
             resource.evaluation_run = ProductResourceRef(
                 uri=f"cyrene://echo/evaluation-runs/{run.id}",
                 id=str(run.id),
                 resource_version=run.resource_version,
             )
-            self.service.store.save("input", resource)
+            self.service.store.save("input", resource, principal)
             return run
 
-    def send_feedback(self, identifier: UUID, command: SendFeedback) -> HandoffReceipt:
+    def send_feedback(
+        self,
+        identifier: UUID,
+        command: SendFeedback,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> HandoffReceipt:
         with self.lock:
-            feedback = self.service.get_feedback_set(identifier)
-            persisted = self.service.store.get_feedback_handoff(identifier)
+            feedback = self.service.get_feedback_set(identifier, principal)
+            persisted = self.service.store.get_feedback_handoff(identifier, principal)
             if feedback.handoff_status == FeedbackHandoffStatus.HANDLED_OFF:
                 if persisted is None:
                     raise EchoError(
@@ -235,7 +407,7 @@ class LifecycleActions:
                     detail="Configure the Catalyst Product URL before sending feedback.",
                     status=503,
                 )
-            feedback, payload = self.service.export_feedback_set(identifier)
+            feedback, payload = self.service.export_feedback_set(identifier, principal)
             assert feedback.export_artifact is not None
             lineage = [f"cyrene://echo/evaluation-runs/{feedback.run_id}"]
             for line in payload.decode().splitlines():
@@ -314,5 +486,5 @@ class LifecycleActions:
                 open_in=receipt.open_in,
                 confirmed_at=utc_now(),
             )
-            self.service.store.save_feedback_handoff(handled, handoff)
+            self.service.store.save_feedback_handoff(handled, handoff, principal)
             return receipt
