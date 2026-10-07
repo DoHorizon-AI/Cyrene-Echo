@@ -130,9 +130,7 @@ class LifecycleActions:
             )
         return resource
 
-    def _read_rows(
-        self, artifact: ArtifactRef, format_name: str
-    ) -> list[dict[str, Any]]:
+    def _read_rows(self, artifact: ArtifactRef, format_name: str) -> list[dict[str, Any]]:
         """Read and validate either a legacy Navigator snapshot or generic JSONL."""
 
         try:
@@ -141,14 +139,7 @@ class LifecycleActions:
                 for line in self.service.artifacts.resolve(artifact).read_text().splitlines()
                 if line.strip()
             ]
-            if (
-                not rows
-                or len(rows) > 1000
-                or any(
-                    not isinstance(row, dict)
-                    for row in rows
-                )
-            ):
+            if not rows or len(rows) > 1000 or any(not isinstance(row, dict) for row in rows):
                 raise ValueError("unsupported text snapshot")
             if format_name == "NAVIGATOR_TEXT_JSONL_V1":
                 if any(

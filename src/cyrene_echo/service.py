@@ -314,9 +314,7 @@ class EchoService:
         suite = self.get_suite(command.suite_id, principal)
         binding = self._binding_for(command.engine_binding_id, suite)
         digest = request_hash(command)
-        replay_id = self.store.resolve_idempotency(
-            "create-run", idempotency_key, digest, principal
-        )
+        replay_id = self.store.resolve_idempotency("create-run", idempotency_key, digest, principal)
         if replay_id is not None:
             return self.get_run(UUID(replay_id), principal)
         now = utc_now()
@@ -352,9 +350,7 @@ class EchoService:
             engine = self._engine_for(binding, suite, trace_id=trace_id, span_id=span_id)
             measurement = engine.evaluate(source_path, suite, report_path)
             if report_context is not None:
-                measurement = self._align_report_sample_indexes(
-                    measurement, report_context
-                )
+                measurement = self._align_report_sample_indexes(measurement, report_context)
                 self._write_evaluation_report(
                     report_path,
                     result_id=result_id,
@@ -557,9 +553,7 @@ class EchoService:
             sample_results[sample_id] = sample.passed
 
         expected_ids = {
-            sample.sample_id
-            for sample in report_context.samples
-            if sample.status == "EVALUATED"
+            sample.sample_id for sample in report_context.samples if sample.status == "EVALUATED"
         }
         if set(sample_results) != expected_ids:
             raise EvaluationEngineFailure(
@@ -634,9 +628,7 @@ class EchoService:
             "coverage": {
                 "total": len(report_context.samples),
                 "evaluated": evaluated,
-                "failed": sum(
-                    1 for sample in report_context.samples if sample.status == "FAILED"
-                ),
+                "failed": sum(1 for sample in report_context.samples if sample.status == "FAILED"),
                 "skipped": sum(
                     1 for sample in report_context.samples if sample.status == "SKIPPED"
                 ),
@@ -830,9 +822,7 @@ class EchoService:
 
         self._require_run(run_id, principal)
         self.get_sample(run_id, command.sample_index, principal)
-        existing = self._find_annotation(
-            run_id, command.sample_index, command.reviewer, principal
-        )
+        existing = self._find_annotation(run_id, command.sample_index, command.reviewer, principal)
         now = utc_now()
         if existing is not None:
             updated = existing.model_copy(

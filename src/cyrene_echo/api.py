@@ -164,12 +164,8 @@ def create_app(
         "/api/v1/feedback-sets/{feedback_id}/actions/send-to-catalyst",
         response_model=HandoffReceipt,
     )
-    def send_feedback(
-        feedback_id: UUID, command: SendFeedback, request: Request
-    ) -> HandoffReceipt:
-        return lifecycle.send_feedback(
-            feedback_id, command, trial_principal_from_request(request)
-        )
+    def send_feedback(feedback_id: UUID, command: SendFeedback, request: Request) -> HandoffReceipt:
+        return lifecycle.send_feedback(feedback_id, command, trial_principal_from_request(request))
 
     @app.middleware("http")
     async def propagate_trace(
@@ -386,9 +382,7 @@ def create_app(
         command: CreateSuiteRequest,
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=200),
     ) -> EvaluationSuite:
-        return service.create_suite(
-            command, idempotency_key, trial_principal_from_request(request)
-        )
+        return service.create_suite(command, idempotency_key, trial_principal_from_request(request))
 
     @app.post(
         "/internal/workspace/v1/evaluation-suites",
@@ -487,9 +481,7 @@ def create_app(
         response_model=EvaluationRun,
         response_model_exclude_none=True,
     )
-    def get_run(
-        run_id: Annotated[UUID, ApiPath(alias="runId")], request: Request
-    ) -> EvaluationRun:
+    def get_run(run_id: Annotated[UUID, ApiPath(alias="runId")], request: Request) -> EvaluationRun:
         return service.get_run(run_id, trial_principal_from_request(request))
 
     @app.get("/api/v1/evaluation-results/{resultId}", response_model=EvaluationResult)
@@ -507,15 +499,11 @@ def create_app(
         result_id: Annotated[UUID, ApiPath(alias="resultId")],
         request: Request,
     ) -> Response:
-        payload = service.export_result_report(
-            result_id, trial_principal_from_request(request)
-        )
+        payload = service.export_result_report(result_id, trial_principal_from_request(request))
         return Response(
             content=payload,
             media_type="application/json",
-            headers={
-                "Content-Disposition": f'attachment; filename="evaluation-{result_id}.json"'
-            },
+            headers={"Content-Disposition": f'attachment; filename="evaluation-{result_id}.json"'},
         )
 
     @app.get("/api/v1/gate-decisions/{gateId}", response_model=GateDecision)
@@ -570,9 +558,7 @@ def create_app(
         run_id: Annotated[UUID, ApiPath(alias="runId")],
         command: CreateAnnotationRequest,
     ) -> HumanAnnotation:
-        return service.annotate_sample(
-            run_id, command, trial_principal_from_request(request)
-        )
+        return service.annotate_sample(run_id, command, trial_principal_from_request(request))
 
     @app.get(
         "/api/v1/evaluation-runs/{runId}/annotations",
@@ -610,9 +596,7 @@ def create_app(
         request: Request,
         feedback_set_id: Annotated[UUID, ApiPath(alias="feedbackSetId")],
     ) -> FeedbackSet:
-        return service.get_feedback_set(
-            feedback_set_id, trial_principal_from_request(request)
-        )
+        return service.get_feedback_set(feedback_set_id, trial_principal_from_request(request))
 
     @app.get(
         "/api/v1/feedback-sets",

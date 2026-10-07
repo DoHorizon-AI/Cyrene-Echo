@@ -99,16 +99,13 @@ def test_reference_actual_runs_real_plugin_and_exports_bound_report(tmp_path: Pa
             assert result["metrics"]["exact_match"] == 0.5
             assert result["inputDigest"] == evaluation_input["artifact"]["digest"]
 
-            exported = client.get(
-                f"/api/v1/evaluation-results/{run['resultId']}/export"
-            )
+            exported = client.get(f"/api/v1/evaluation-results/{run['resultId']}/export")
             assert exported.status_code == 200, exported.text
             assert exported.headers["content-type"].startswith("application/json")
             report = exported.json()
             report_schema = json.loads(
                 (
-                    Path(__file__).parents[1]
-                    / "contracts/product/v1/evaluation-report.schema.json"
+                    Path(__file__).parents[1] / "contracts/product/v1/evaluation-report.schema.json"
                 ).read_text(encoding="utf-8")
             )
             validate(report, report_schema)
@@ -185,9 +182,7 @@ def test_reference_actual_all_skipped_creates_no_run_or_score(tmp_path: Path) ->
             )
             assert response.status_code == 422, response.text
             assert response.json()["code"] == "NO_EVALUABLE_SAMPLES"
-            stored_input = client.get(
-                f"/api/v1/evaluation-inputs/{evaluation_input['id']}"
-            ).json()
+            stored_input = client.get(f"/api/v1/evaluation-inputs/{evaluation_input['id']}").json()
             assert stored_input["state"] == "DRAFT"
 
             duplicate_rows = [
