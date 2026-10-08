@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.cyrene.dev/echo/product/v1/evaluation-report.schema.json",
+  "title": "Echo data tools EvaluationReport v1",
+  "type": "object",
+  "required": [
+    "schemaVersion", "resultId", "target", "inputDigest", "evaluator",
+    "coverage", "metrics", "samples", "failures", "skips"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "cyrene.echo.evaluation-report.v1"},
+    "resultId": {"type": "string", "format": "uuid"},
+    "target": {"$ref": "#/$defs/Target"},
+    "inputDigest": {"$ref": "#/$defs/Sha256Digest"},
+    "evaluator": {"$ref": "#/$defs/Evaluator"},
+    "coverage": {"$ref": "#/$defs/Coverage"},
+    "metrics": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {"$ref": "#/$defs/ExactMatchMetric"}
+    },
+    "samples": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/SampleResult"}
+    },
+    "failures": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/SampleIssue"}
+    },
+    "skips": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/SampleIssue"}
+    }
+  },
+  "$defs": {
+    "Sha256Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "Target": {
+      "type": "object",
+      "required": ["versionRef", "packageDigest"],
+      "properties": {
+        "versionRef": {"type": "string", "format": "uri", "minLength": 1},
+        "packageDigest": {"$ref": "#/$defs/Sha256Digest"}
+      },
+      "additionalProperties": false
+    },
+    "Evaluator": {
+      "type": "object",
+      "required": ["id", "version"],
+      "properties": {
+        "id": {"const": "exact_match.v1"},
+        "version": {"const": "1"}
+      },
+      "additionalProperties": false
+    },
+    "Coverage": {
+      "type": "object",
+      "required": ["total", "evaluated", "failed", "skipped"],
+      "properties": {
+        "total": {"type": "integer", "minimum": 1},
+        "evaluated": {"type": "integer", "minimum": 1},
+        "failed": {"type": "integer", "minimum": 0},
+        "skipped": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "ExactMatchMetric": {
+      "type": "object",
+      "required": ["name", "matched", "evaluated", "value"],
+      "properties": {
+        "name": {"const": "exact_match"},
+        "matched": {"type": "integer", "minimum": 0},
+        "evaluated": {"type": "integer", "minimum": 1},
+        "value": {"type": "number", "minimum": 0, "maximum": 1}
+      },
+      "additionalProperties": false
+    },
+    "SampleIssue": {
+      "type": "object",
+      "required": ["sampleId", "code", "message"],
+      "properties": {
+        "sampleId": {"type": "string", "minLength": 1, "maxLength": 500},
+        "code": {"type": "string", "minLength": 1, "maxLength": 100},
+        "message": {"type": "string", "maxLength": 2000}
+      },
+      "additionalProperties": false
+    },
+    "SampleResult": {
+      "type": "object",
+      "required": ["sampleId", "status"],
+      "properties": {
+        "sampleId": {"type": "string", "minLength": 1, "maxLength": 500},
+        "status": {"type": "string", "enum": ["EVALUATED", "FAILED", "SKIPPED"]},
+        "exactMatch": {"type": "boolean"},
+        "code": {"type": "string", "minLength": 1, "maxLength": 100},
+        "message": {"type": "string", "maxLength": 2000}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "EVALUATED"}}, "required": ["status"]},
+          "then": {"required": ["exactMatch"], "not": {"anyOf": [{"required": ["code"]}, {"required": ["message"]}]}}
+        },
+        {
+          "if": {"properties": {"status": {"enum": ["FAILED", "SKIPPED"]}}, "required": ["status"]},
+          "then": {"required": ["code", "message"], "not": {"required": ["exactMatch"]}}
+        }
+      ],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

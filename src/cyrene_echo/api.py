@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Any
@@ -42,26 +41,27 @@ from cyrene_echo.domain import (
     SampleRecord,
 )
 from cyrene_echo.engine import EchoArtifactPlane, EvaluationExecutionPort
-from cyrene_echo.errors import EchoError
+from cyrene_echo.errors import EchoError, EvaluationEngineFailure, map_echo_error
 from cyrene_echo.lifecycle import (
     EvaluateInput,
     HandoffReceipt,
     LifecycleActions,
     SendFeedback,
 )
+from cyrene_echo.logging import (
+    emit_diagnostic_error,
+    parse_w3c_traceparent,
+    sanitize_request_id,
+)
 from cyrene_echo.plugin_evaluation import evaluation_port_from_environment
 from cyrene_echo.service import EchoService
 from cyrene_echo.store import EchoStore
+from cyrene_echo.trial_auth import install_trial_auth, trial_principal_from_request
 from cyrene_echo.ui_page import INDEX_HTML
-
-_TRACEPARENT = re.compile(r"^00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$")
-
-
-def _incoming_trace_id(value: str) -> str | None:
-    match = _TRACEPARENT.fullmatch(value)
-    if match is None or match.group(1) == "0" * 32 or match.group(2) == "0" * 16:
-        return None
-    return match.group(1)
+from cyrene_echo.workspace_auth import (
+    WorkspaceServiceAuthenticator,
+    WorkspaceServicePrincipal,
+)
 
 
 def create_app(
@@ -71,6 +71,9 @@ def create_app(
     engine: EvaluationExecutionPort | None = None,
     judge_bearer_token: str | None = None,
     catalyst_url: str | None = None,
+    workspace_authenticator: WorkspaceServiceAuthenticator | None = None,
+    trial_authenticator: WorkspaceServiceAuthenticator | None = None,
+    trial_auth_required: bool = False,
 ) -> FastAPI:
     """Build Echo with explicit persistence and evaluator adapters. | 创建 Echo 应用。"""
 
@@ -82,10 +85,25 @@ def create_app(
         judge_bearer_token=judge_bearer_token,
     )
     app = FastAPI(title="Cyrene Echo Product API", version="1.0.0")
+    install_trial_auth(
+        app,
+        authenticator=trial_authenticator,
+        required=trial_auth_required,
+    )
     app.state.echo_store = store
     app.state.echo_service = service
+    app.router.on_shutdown.append(service.close)
+    app.state.workspace_authenticator = (
+        workspace_authenticator or WorkspaceServiceAuthenticator.from_json(None)
+    )
     lifecycle = LifecycleActions(service, catalyst_url)
     app.state.echo_lifecycle = lifecycle
+
+    @app.get("/healthz", include_in_schema=False)
+    def healthz() -> dict[str, str]:
+        """Report process liveness to the container orchestrator. | 向容器编排器报告进程存活。"""
+
+        return {"status": "ok"}
 
     @app.post(
         "/api/v1/evaluation-inputs",
@@ -94,68 +112,166 @@ def create_app(
         response_model_exclude_none=True,
     )
     def import_input(
+        request: Request,
         command: ImportEvaluationInput,
         idempotency_key: str | None = Header(default=None, max_length=200),
     ) -> EvaluationInput:
-        return lifecycle.import_input(command, idempotency_key)
+        return lifecycle.import_input(
+            command, idempotency_key, trial_principal_from_request(request)
+        )
 
     @app.get(
         "/api/v1/evaluation-inputs",
         response_model=list[EvaluationInput],
         response_model_exclude_none=True,
     )
-    def list_inputs() -> list[EvaluationInput]:
-        return store.list_inputs()
+    def list_inputs(request: Request) -> list[EvaluationInput]:
+        return store.list_inputs(trial_principal_from_request(request))
 
     @app.get(
         "/api/v1/evaluation-inputs/{input_id}",
         response_model=EvaluationInput,
         response_model_exclude_none=True,
     )
-    def get_input(input_id: UUID) -> EvaluationInput:
-        return lifecycle.get_input(input_id)
+    def get_input(input_id: UUID, request: Request) -> EvaluationInput:
+        return lifecycle.get_input(input_id, trial_principal_from_request(request))
 
     @app.get("/api/v1/evaluation-inputs/{input_id}/samples")
-    def preview_input(input_id: UUID) -> dict[str, Any]:
-        return lifecycle.preview(input_id)
+    def preview_input(input_id: UUID, request: Request) -> dict[str, Any]:
+        return lifecycle.preview(input_id, trial_principal_from_request(request))
 
     @app.post(
         "/api/v1/evaluation-inputs/{input_id}/actions/evaluate",
         response_model=EvaluationRun,
         status_code=201,
     )
-    def evaluate_input(input_id: UUID, command: EvaluateInput) -> EvaluationRun:
-        return lifecycle.evaluate(input_id, command)
+    def evaluate_input(
+        input_id: UUID,
+        command: EvaluateInput,
+        request: Request,
+        idempotency_key: str | None = Header(
+            default=None, alias="Idempotency-Key", min_length=1, max_length=200
+        ),
+    ) -> EvaluationRun:
+        return lifecycle.evaluate(
+            input_id,
+            command,
+            trial_principal_from_request(request),
+            idempotency_key,
+        )
 
     @app.post(
         "/api/v1/feedback-sets/{feedback_id}/actions/send-to-catalyst",
         response_model=HandoffReceipt,
     )
-    def send_feedback(feedback_id: UUID, command: SendFeedback) -> HandoffReceipt:
-        return lifecycle.send_feedback(feedback_id, command)
+    def send_feedback(feedback_id: UUID, command: SendFeedback, request: Request) -> HandoffReceipt:
+        return lifecycle.send_feedback(feedback_id, command, trial_principal_from_request(request))
 
     @app.middleware("http")
     async def propagate_trace(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        trace_id = _incoming_trace_id(request.headers.get("traceparent", "")) or uuid4().hex
+        parsed_trace = parse_w3c_traceparent(request.headers.get("traceparent"))
+        if parsed_trace:
+            trace_id, span_id = parsed_trace
+        else:
+            trace_id = uuid4().hex
+            span_id = "0000000000000001"
+
+        raw_req_id = request.headers.get("x-request-id")
+        request_id = sanitize_request_id(raw_req_id) or f"req-{uuid4().hex[:12]}"
+
         request.state.trace_id = trace_id
-        response = await call_next(request)
-        response.headers["traceparent"] = f"00-{trace_id}-0000000000000001-01"
+        request.state.span_id = span_id
+        request.state.request_id = request_id
+
+        response: Response
+        private_collection = "/internal/workspace/v1/evaluation-suites"
+        private_route = request.url.path == private_collection or request.url.path.startswith(
+            private_collection + "/"
+        )
+        if private_route and request.method in {"GET", "POST"}:
+            authenticator: WorkspaceServiceAuthenticator = app.state.workspace_authenticator
+            principal = authenticator.authenticate(request.headers.get("authorization"))
+            if not authenticator.configured or principal is None:
+                status = 503 if not authenticator.configured else 401
+                code = (
+                    "ECHO_WORKSPACE_AUTH_UNAVAILABLE"
+                    if status == 503
+                    else "ECHO_WORKSPACE_AUTHENTICATION_REQUIRED"
+                )
+                title = (
+                    "Workspace service authentication unavailable"
+                    if status == 503
+                    else "Workspace service authentication required"
+                )
+                detail = (
+                    "Workspace service credentials are not configured."
+                    if status == 503
+                    else "A valid Workspace service bearer token is required."
+                )
+                canonical_code = map_echo_error(code)["code"]
+                problem = ProblemDetails(
+                    type=f"https://errors.cyrene.dev/echo/{canonical_code.lower()}",
+                    title=title,
+                    status=status,
+                    detail=detail,
+                    instance=request.url.path,
+                    code=code,
+                    retryable=status == 503,
+                    trace_id=trace_id,
+                    request_id=request_id,
+                )
+                response = JSONResponse(
+                    status_code=status,
+                    content=problem.model_dump(by_alias=True, exclude_none=True, mode="json"),
+                    media_type="application/problem+json",
+                )
+                if status == 401:
+                    response.headers["WWW-Authenticate"] = "Bearer"
+            else:
+                request.state.workspace_service_principal = principal
+                response = await call_next(request)
+        else:
+            response = await call_next(request)
+        response.headers["traceparent"] = f"00-{trace_id}-{span_id}-01"
+        response.headers["x-request-id"] = request_id
         return response
 
     @app.exception_handler(EchoError)
     async def product_error(request: Request, exc: EchoError) -> JSONResponse:
+        mapping = map_echo_error(exc.code)
+        canonical_code = mapping["code"]
+        trace_id = getattr(request.state, "trace_id", None) or uuid4().hex
+        span_id = getattr(request.state, "span_id", "0000000000000001")
+        request_id = getattr(request.state, "request_id", None)
+        emit_diagnostic_error(
+            "echo.error",
+            canonical_code,
+            f"{exc.title}: {exc.detail}",
+            trace_id=trace_id,
+            span_id=span_id,
+            attributes={
+                "http.target": request.url.path,
+                "http.status_code": exc.status,
+                "request_id": request_id,
+                "cause_kind": mapping.get("cause_kind"),
+                "recovery_action": mapping.get("recovery_action"),
+                "legacy_code": exc.code,
+            },
+        )
         problem = ProblemDetails(
-            type=f"https://errors.cyrene.dev/echo/{exc.code.lower()}",
+            type=f"https://errors.cyrene.dev/echo/{canonical_code.lower()}",
             title=exc.title,
             status=exc.status,
             detail=exc.detail,
             instance=request.url.path,
             code=exc.code,
             retryable=exc.retryable,
-            trace_id=request.state.trace_id,
+            trace_id=trace_id,
             resource_ref=exc.resource_ref,
+            request_id=request_id,
+            recovery_action=mapping.get("recovery_action"),
         )
         return JSONResponse(
             status_code=exc.status,
@@ -163,8 +279,66 @@ def create_app(
             media_type="application/problem+json",
         )
 
+    @app.exception_handler(EvaluationEngineFailure)
+    async def engine_error(request: Request, _exc: EvaluationEngineFailure) -> JSONResponse:
+        mapping = map_echo_error("ECHO_ENGINE_FAILED")
+        canonical_code = mapping["code"]
+        trace_id = getattr(request.state, "trace_id", None) or uuid4().hex
+        span_id = getattr(request.state, "span_id", "0000000000000001")
+        request_id = getattr(request.state, "request_id", None)
+        emit_diagnostic_error(
+            "echo.engine_failure",
+            canonical_code,
+            "The evaluation execution engine failed.",
+            trace_id=trace_id,
+            span_id=span_id,
+            attributes={
+                "http.target": request.url.path,
+                "http.status_code": 500,
+                "request_id": request_id,
+                "cause_kind": mapping.get("cause_kind"),
+                "recovery_action": mapping.get("recovery_action"),
+            },
+        )
+        problem = ProblemDetails(
+            type="https://errors.cyrene.dev/echo/engine-failed",
+            title="Evaluation engine failed",
+            status=500,
+            detail="The evaluation engine failed to execute the run.",
+            instance=request.url.path,
+            code="ECHO_ENGINE_FAILED",
+            retryable=True,
+            trace_id=trace_id,
+            request_id=request_id,
+            recovery_action=mapping.get("recovery_action"),
+        )
+        return JSONResponse(
+            status_code=500,
+            content=problem.model_dump(by_alias=True, mode="json"),
+            media_type="application/problem+json",
+        )
+
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, _exc: RequestValidationError) -> JSONResponse:
+        mapping = map_echo_error("ECHO_REQUEST_INVALID")
+        canonical_code = mapping["code"]
+        trace_id = getattr(request.state, "trace_id", None) or uuid4().hex
+        span_id = getattr(request.state, "span_id", "0000000000000001")
+        request_id = getattr(request.state, "request_id", None)
+        emit_diagnostic_error(
+            "echo.validation_error",
+            canonical_code,
+            "The request does not conform to the Echo Product API v1 contract.",
+            trace_id=trace_id,
+            span_id=span_id,
+            attributes={
+                "http.target": request.url.path,
+                "http.status_code": 422,
+                "request_id": request_id,
+                "cause_kind": mapping.get("cause_kind"),
+                "recovery_action": mapping.get("recovery_action"),
+            },
+        )
         problem = ProblemDetails(
             type="https://errors.cyrene.dev/echo/request-invalid",
             title="Request validation failed",
@@ -173,7 +347,9 @@ def create_app(
             instance=request.url.path,
             code="ECHO_REQUEST_INVALID",
             retryable=False,
-            trace_id=request.state.trace_id,
+            trace_id=trace_id,
+            request_id=request_id,
+            recovery_action=mapping.get("recovery_action"),
         )
         return JSONResponse(
             status_code=422,
@@ -184,6 +360,7 @@ def create_app(
     # ────────────────────────────────────────────────────────────────
     # SECTION: Minimal session-feedback interface (HTML)
     # ────────────────────────────────────────────────────────────────
+    # 中文:最小会话反馈接口(HTML)。
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     def index_page() -> str:
         """Serve the minimal sample-list / score / filter / export page. | 最小界面。"""
@@ -193,6 +370,7 @@ def create_app(
     # ────────────────────────────────────────────────────────────────
     # SECTION: EvaluationSuite + JudgeProfile
     # ────────────────────────────────────────────────────────────────
+    # 中文:EvaluationSuite 与 JudgeProfile。
     @app.post(
         "/api/v1/evaluation-suites",
         response_model=EvaluationSuite,
@@ -200,14 +378,48 @@ def create_app(
         status_code=201,
     )
     def create_suite(
+        request: Request,
         command: CreateSuiteRequest,
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=200),
     ) -> EvaluationSuite:
-        return service.create_suite(command, idempotency_key)
+        return service.create_suite(command, idempotency_key, trial_principal_from_request(request))
+
+    @app.post(
+        "/internal/workspace/v1/evaluation-suites",
+        response_model=EvaluationSuite,
+        response_model_exclude_none=True,
+        status_code=201,
+        include_in_schema=False,
+    )
+    def create_workspace_suite(
+        request: Request,
+        command: CreateSuiteRequest,
+        idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=200),
+    ) -> EvaluationSuite:
+        principal = request.state.workspace_service_principal
+        if not isinstance(principal, WorkspaceServicePrincipal):
+            raise RuntimeError("Workspace service principal missing after route authentication")
+        return service.create_workspace_suite(command, idempotency_key, principal)
 
     @app.get("/api/v1/evaluation-suites/{suiteId}", response_model=EvaluationSuite)
-    def get_suite(suite_id: Annotated[UUID, ApiPath(alias="suiteId")]) -> EvaluationSuite:
-        return service.get_suite(suite_id)
+    def get_suite(
+        suite_id: Annotated[UUID, ApiPath(alias="suiteId")], request: Request
+    ) -> EvaluationSuite:
+        return service.get_suite(suite_id, trial_principal_from_request(request))
+
+    @app.get(
+        "/internal/workspace/v1/evaluation-suites/{suiteId}",
+        response_model=EvaluationSuite,
+        include_in_schema=False,
+    )
+    def get_workspace_suite(
+        request: Request,
+        suite_id: Annotated[UUID, ApiPath(alias="suiteId")],
+    ) -> EvaluationSuite:
+        principal = request.state.workspace_service_principal
+        if not isinstance(principal, WorkspaceServicePrincipal):
+            raise RuntimeError("Workspace service principal missing after route authentication")
+        return service.get_workspace_suite(suite_id, principal)
 
     @app.post(
         "/api/v1/judge-profiles",
@@ -234,6 +446,7 @@ def create_app(
     # ────────────────────────────────────────────────────────────────
     # SECTION: Session import + EvaluationRun execution
     # ────────────────────────────────────────────────────────────────
+    # 中文:会话导入与 EvaluationRun 执行。
     @app.post(
         "/api/v1/session-artifacts",
         response_model=ArtifactRef,
@@ -251,35 +464,64 @@ def create_app(
         status_code=201,
     )
     def create_run(
+        request: Request,
         command: CreateRunRequest,
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=200),
     ) -> EvaluationRun:
-        return service.create_run(command, idempotency_key)
+        return service.create_run(
+            command,
+            idempotency_key,
+            trace_id=request.state.trace_id,
+            span_id=request.state.span_id,
+            principal=trial_principal_from_request(request),
+        )
 
     @app.get(
         "/api/v1/evaluation-runs/{runId}",
         response_model=EvaluationRun,
         response_model_exclude_none=True,
     )
-    def get_run(run_id: Annotated[UUID, ApiPath(alias="runId")]) -> EvaluationRun:
-        return service.get_run(run_id)
+    def get_run(run_id: Annotated[UUID, ApiPath(alias="runId")], request: Request) -> EvaluationRun:
+        return service.get_run(run_id, trial_principal_from_request(request))
 
     @app.get("/api/v1/evaluation-results/{resultId}", response_model=EvaluationResult)
-    def get_result(result_id: Annotated[UUID, ApiPath(alias="resultId")]) -> EvaluationResult:
-        return service.get_result(result_id)
+    def get_result(
+        result_id: Annotated[UUID, ApiPath(alias="resultId")], request: Request
+    ) -> EvaluationResult:
+        return service.get_result(result_id, trial_principal_from_request(request))
+
+    @app.get(
+        "/api/v1/evaluation-results/{resultId}/export",
+        response_class=Response,
+        responses={200: {"content": {"application/json": {}}}},
+    )
+    def download_evaluation_report(
+        result_id: Annotated[UUID, ApiPath(alias="resultId")],
+        request: Request,
+    ) -> Response:
+        payload = service.export_result_report(result_id, trial_principal_from_request(request))
+        return Response(
+            content=payload,
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="evaluation-{result_id}.json"'},
+        )
 
     @app.get("/api/v1/gate-decisions/{gateId}", response_model=GateDecision)
-    def get_gate(gate_id: Annotated[UUID, ApiPath(alias="gateId")]) -> GateDecision:
-        return service.get_gate(gate_id)
+    def get_gate(
+        gate_id: Annotated[UUID, ApiPath(alias="gateId")], request: Request
+    ) -> GateDecision:
+        return service.get_gate(gate_id, trial_principal_from_request(request))
 
     # ────────────────────────────────────────────────────────────────
     # SECTION: Per-sample review, human annotation, filtering
     # ────────────────────────────────────────────────────────────────
+    # 中文:逐样本审核、人工标注与筛选。
     @app.get(
         "/api/v1/evaluation-runs/{runId}/samples",
         response_model=list[SampleRecord],
     )
     def list_samples(
+        request: Request,
         run_id: Annotated[UUID, ApiPath(alias="runId")],
         only_passed: bool | None = Query(default=None),
         only_annotated: bool | None = Query(default=None),
@@ -292,6 +534,7 @@ def create_app(
             only_annotated=only_annotated,
             limit=limit,
             offset=offset,
+            principal=trial_principal_from_request(request),
         )
 
     @app.get(
@@ -299,10 +542,11 @@ def create_app(
         response_model=SampleRecord,
     )
     def get_sample(
+        request: Request,
         run_id: Annotated[UUID, ApiPath(alias="runId")],
         sample_index: Annotated[int, ApiPath(alias="sampleIndex", ge=1)],
     ) -> SampleRecord:
-        return service.get_sample(run_id, sample_index)
+        return service.get_sample(run_id, sample_index, trial_principal_from_request(request))
 
     @app.post(
         "/api/v1/evaluation-runs/{runId}/annotations",
@@ -310,51 +554,59 @@ def create_app(
         status_code=201,
     )
     def annotate_sample(
+        request: Request,
         run_id: Annotated[UUID, ApiPath(alias="runId")],
         command: CreateAnnotationRequest,
     ) -> HumanAnnotation:
-        return service.annotate_sample(run_id, command)
+        return service.annotate_sample(run_id, command, trial_principal_from_request(request))
 
     @app.get(
         "/api/v1/evaluation-runs/{runId}/annotations",
         response_model=list[HumanAnnotation],
     )
     def list_annotations(
+        request: Request,
         run_id: Annotated[UUID, ApiPath(alias="runId")],
     ) -> list[HumanAnnotation]:
-        return service.list_annotations(run_id)
+        return service.list_annotations(run_id, trial_principal_from_request(request))
 
     # ────────────────────────────────────────────────────────────────
     # SECTION: FeedbackSet + Catalyst-compatible export
     # ────────────────────────────────────────────────────────────────
+    # 中文:FeedbackSet 与 Catalyst 兼容导出。
     @app.post(
         "/api/v1/feedback-sets",
         response_model=FeedbackSet,
         status_code=201,
     )
     def create_feedback_set(
+        request: Request,
         command: CreateFeedbackSetRequest,
         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=200),
     ) -> FeedbackSet:
-        return service.create_feedback_set(command, idempotency_key)
+        return service.create_feedback_set(
+            command, idempotency_key, trial_principal_from_request(request)
+        )
 
     @app.get(
         "/api/v1/feedback-sets/{feedbackSetId}",
         response_model=FeedbackSet,
     )
     def get_feedback_set(
+        request: Request,
         feedback_set_id: Annotated[UUID, ApiPath(alias="feedbackSetId")],
     ) -> FeedbackSet:
-        return service.get_feedback_set(feedback_set_id)
+        return service.get_feedback_set(feedback_set_id, trial_principal_from_request(request))
 
     @app.get(
         "/api/v1/feedback-sets",
         response_model=list[FeedbackSet],
     )
     def list_feedback_sets(
+        request: Request,
         run_id: Annotated[UUID | None, Query(alias="runId")] = None,
     ) -> list[FeedbackSet]:
-        return service.list_feedback_sets(run_id)
+        return service.list_feedback_sets(run_id, trial_principal_from_request(request))
 
     @app.post(
         "/api/v1/feedback-sets/{feedbackSetId}/export",
@@ -362,9 +614,12 @@ def create_app(
         response_model_exclude_none=True,
     )
     def export_feedback_set(
+        request: Request,
         feedback_set_id: Annotated[UUID, ApiPath(alias="feedbackSetId")],
     ) -> ExportFeedbackSetResponse:
-        feedback_set, _payload = service.export_feedback_set(feedback_set_id)
+        feedback_set, _payload = service.export_feedback_set(
+            feedback_set_id, trial_principal_from_request(request)
+        )
         return ExportFeedbackSetResponse(
             feedback_set=feedback_set,
             export_artifact=feedback_set.export_artifact,  # type: ignore[arg-type]
@@ -377,9 +632,12 @@ def create_app(
         response_class=Response,
     )
     def download_feedback_set(
+        request: Request,
         feedback_set_id: Annotated[UUID, ApiPath(alias="feedbackSetId")],
     ) -> Response:
-        feedback_set, payload = service.export_feedback_set(feedback_set_id)
+        feedback_set, payload = service.export_feedback_set(
+            feedback_set_id, trial_principal_from_request(request)
+        )
         return Response(
             content=payload,
             media_type="application/jsonl",

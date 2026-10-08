@@ -93,6 +93,9 @@ def test_explicit_reference_review_and_frozen_feedback(tmp_path: Path) -> None:
         assert response.status_code == 201, response.text
         run = response.json()
         assert run["state"] == "SUCCEEDED"
+        legacy_export = client.get(f"/api/v1/evaluation-results/{run['resultId']}/export")
+        assert legacy_export.status_code == 422
+        assert legacy_export.json()["code"] == "ECHO_REPORT_EXPORT_UNAVAILABLE"
         assert client.post(path, json=command).json()["id"] == run["id"]
         assert provider.resolve(artifact).read_bytes() == original
         annotation_path = f"/api/v1/evaluation-runs/{run['id']}/annotations"

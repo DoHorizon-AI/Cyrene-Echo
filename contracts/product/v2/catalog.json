@@ -1,0 +1,65 @@
+{
+  "schemaVersion": "cyrene.product.operation-catalog.v2",
+  "catalogVersion": "2.0.0",
+  "ownerId": "echo",
+  "operations": [
+    {
+      "operationId": "workspaceGetEvaluationSuite",
+      "routeId": "workspaceGetEvaluationSuite",
+      "openapiPath": "contracts/product/v1/workspace-internal.openapi.yaml",
+      "kind": "READ",
+      "requestSchemaPointer": null,
+      "responseSchemaPointers": [
+        "#/paths/~1internal~1workspace~1v1~1evaluation-suites~1{suiteId}/get/responses/200/content/application~1json/schema"
+      ],
+      "resourceId": {
+        "required": true,
+        "pathParameter": "suiteId",
+        "minLength": 1,
+        "maxLength": 512,
+        "pattern": null
+      },
+      "idempotency": {
+        "required": false,
+        "header": null,
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "scope": {
+        "organizationPathParameter": null,
+        "workspacePathParameter": null,
+        "responseBindings": [],
+        "requestBindings": []
+      }
+    },
+    {
+      "operationId": "workspaceCreateEvaluationSuite",
+      "routeId": "workspaceCreateEvaluationSuite",
+      "openapiPath": "contracts/product/v1/workspace-internal.openapi.yaml",
+      "kind": "COMMAND",
+      "requestSchemaPointer": "#/paths/~1internal~1workspace~1v1~1evaluation-suites/post/requestBody/content/application~1json/schema",
+      "responseSchemaPointers": [
+        "#/paths/~1internal~1workspace~1v1~1evaluation-suites/post/responses/201/content/application~1json/schema"
+      ],
+      "resourceId": {
+        "required": false,
+        "pathParameter": null,
+        "minLength": 1,
+        "maxLength": 512,
+        "pattern": null
+      },
+      "idempotency": {
+        "required": false,
+        "header": null,
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "scope": {
+        "organizationPathParameter": null,
+        "workspacePathParameter": null,
+        "responseBindings": [],
+        "requestBindings": []
+      }
+    }
+  ]
+}

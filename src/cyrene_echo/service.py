@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -50,7 +52,9 @@ from cyrene_echo.engine import (
     resolve_runner_binding,
 )
 from cyrene_echo.errors import EchoError, EvaluationEngineFailure
+from cyrene_echo.runtime_activity import start_activity_source
 from cyrene_echo.store import EchoStore
+from cyrene_echo.workspace_auth import WorkspaceServicePrincipal
 
 
 def request_hash(command: ContractModel) -> str:
@@ -58,6 +62,26 @@ def request_hash(command: ContractModel) -> str:
 
     body = command.model_dump_json(by_alias=True, exclude_none=True)
     return hashlib.sha256(body.encode()).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationReportSample:
+    """Safe per-sample report status; reference and actual values stay private."""
+
+    sample_id: str
+    sample_index: int
+    status: Literal["EVALUATED", "FAILED", "SKIPPED"]
+    code: str | None = None
+    message: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationReportContext:
+    """Target and row bindings for a reference/actual evaluation report."""
+
+    target_dataset_version: str
+    target_package_digest: str
+    samples: tuple[EvaluationReportSample, ...]
 
 
 class EchoService:
@@ -75,16 +99,33 @@ class EchoService:
         self.artifacts = artifacts
         self.engine = engine
         self.judge_bearer_token = judge_bearer_token
+        self.store.interrupt_running_runs()
+        self.activity = start_activity_source(
+            "cyrene-echo",
+            self.store.list_active_activity_tasks,
+        )
+
+    def close(self) -> None:
+        """Stop the activity heartbeat during orderly application shutdown."""
+
+        if self.activity is not None:
+            self.activity.close()
 
     # ──────────────────────────────────────────────────────────────────
     # SECTION: EvaluationSuite + JudgeProfile lifecycle
     # ──────────────────────────────────────────────────────────────────
+    # 中文:EvaluationSuite 与 JudgeProfile 生命周期。
 
     def create_suite(
-        self, command: CreateSuiteRequest, idempotency_key: str | None
+        self,
+        command: CreateSuiteRequest,
+        idempotency_key: str | None,
+        principal: WorkspaceServicePrincipal | None = None,
     ) -> EvaluationSuite:
         """Create or replay an EvaluationSuite. | 创建或重放 EvaluationSuite。"""
 
+        if principal is not None:
+            return self.create_workspace_suite(command, idempotency_key, principal)
         if command.evaluator == "llm_judge.v1" and command.judge_profile_id is None:
             raise EchoError(
                 code="ECHO_SUITE_JUDGE_PROFILE_REQUIRED",
@@ -127,10 +168,73 @@ class EchoService:
         )
         return suite
 
-    def get_suite(self, suite_id: UUID) -> EvaluationSuite:
+    def create_workspace_suite(
+        self,
+        command: CreateSuiteRequest,
+        idempotency_key: str | None,
+        principal: WorkspaceServicePrincipal,
+    ) -> EvaluationSuite:
+        """Create a suite in the authenticated Workspace scope only."""
+
+        if command.judge_profile_id is not None:
+            raise EchoError(
+                code="ECHO_WORKSPACE_JUDGE_PROFILE_SCOPE_REQUIRED",
+                title="Workspace-scoped judge profile required",
+                detail=(
+                    "Workspace-scoped suites cannot reference a JudgeProfile without "
+                    "Workspace ownership."
+                ),
+                status=403,
+            )
+        if command.evaluator == "llm_judge.v1":
+            raise EchoError(
+                code="ECHO_SUITE_JUDGE_PROFILE_REQUIRED",
+                title="Judge profile required",
+                detail="An llm_judge.v1 suite must reference a JudgeProfile.",
+                status=422,
+            )
+
+        now = utc_now()
+        suite = EvaluationSuite(
+            id=uuid4(),
+            name=command.name,
+            evaluator=command.evaluator,
+            expected_field=command.expected_field,
+            actual_field=command.actual_field,
+            threshold=command.threshold,
+            judge_profile_id=None,
+            created_at=now,
+            updated_at=now,
+            resource_version=1,
+        )
+        return self.store.create_workspace_suite(
+            suite,
+            principal,
+            idempotency_key,
+            request_hash(command),
+        )
+
+    def get_suite(
+        self, suite_id: UUID, principal: WorkspaceServicePrincipal | None = None
+    ) -> EvaluationSuite:
         """Read an EvaluationSuite. | 读取 EvaluationSuite。"""
 
-        suite = self.store.get_suite(suite_id)
+        suite = self.store.get_suite(suite_id, principal)
+        if suite is None:
+            raise EchoError(
+                code="ECHO_SUITE_NOT_FOUND",
+                title="EvaluationSuite not found",
+                detail="No EvaluationSuite exists with the requested id.",
+                status=404,
+            )
+        return suite
+
+    def get_workspace_suite(
+        self, suite_id: UUID, principal: WorkspaceServicePrincipal
+    ) -> EvaluationSuite:
+        """Read an EvaluationSuite assigned to the authenticated Workspace."""
+
+        suite = self.store.get_suite(suite_id, principal)
         if suite is None:
             raise EchoError(
                 code="ECHO_SUITE_NOT_FOUND",
@@ -187,21 +291,32 @@ class EchoService:
     # ──────────────────────────────────────────────────────────────────
     # SECTION: Session import + EvaluationRun execution
     # ──────────────────────────────────────────────────────────────────
+    # 中文:会话导入与 EvaluationRun 执行。
 
     def import_sessions(self, payload: bytes) -> ArtifactRef:
         """Publish raw session JSONL bytes as an immutable dataset artifact. | 导入会话。"""
 
         return self.artifacts.publish_bytes(payload, kind="dataset")
 
-    def create_run(self, command: CreateRunRequest, idempotency_key: str | None) -> EvaluationRun:
+    def create_run(
+        self,
+        command: CreateRunRequest,
+        idempotency_key: str | None,
+        *,
+        trace_id: str | None = None,
+        span_id: str | None = None,
+        engine_source_path: Path | None = None,
+        report_context: EvaluationReportContext | None = None,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> EvaluationRun:
         """Execute an evaluator and atomically publish result, gate, samples. | 执行评估。"""
 
-        suite = self.get_suite(command.suite_id)
+        suite = self.get_suite(command.suite_id, principal)
         binding = self._binding_for(command.engine_binding_id, suite)
         digest = request_hash(command)
-        replay_id = self.store.resolve_idempotency("create-run", idempotency_key, digest)
+        replay_id = self.store.resolve_idempotency("create-run", idempotency_key, digest, principal)
         if replay_id is not None:
-            return self.get_run(UUID(replay_id))
+            return self.get_run(UUID(replay_id), principal)
         now = utc_now()
         run = EvaluationRun(
             id=uuid4(),
@@ -213,18 +328,36 @@ class EchoService:
             updated_at=now,
             resource_version=1,
         )
-        self.store.save("run", run)
+        if self.activity is None:
+            self.store.save("run", run, principal)
+        else:
+            self.activity.admit_and_persist(
+                str(run.id),
+                lambda: self.store.save("run", run, principal),
+                state="RUNNING",
+            )
         self.store.remember_idempotency(
             scope="create-run",
             key=idempotency_key,
             digest=digest,
             resource_id=run.id,
+            principal=principal,
         )
+        result_id = uuid4()
         report_path = self.artifacts.stage_path(f"{run.id}.json")
         try:
-            source_path = self.artifacts.resolve(command.input_artifact)
-            engine = self._engine_for(binding, suite)
+            source_path = engine_source_path or self.artifacts.resolve(command.input_artifact)
+            engine = self._engine_for(binding, suite, trace_id=trace_id, span_id=span_id)
             measurement = engine.evaluate(source_path, suite, report_path)
+            if report_context is not None:
+                measurement = self._align_report_sample_indexes(measurement, report_context)
+                self._write_evaluation_report(
+                    report_path,
+                    result_id=result_id,
+                    input_digest=command.input_artifact.digest,
+                    report_context=report_context,
+                    measurement=measurement,
+                )
             report = self.artifacts.publish(report_path)
         except (EchoError, EvaluationEngineFailure) as exc:
             error = self._as_evaluation_error(exc, run.id)
@@ -240,14 +373,20 @@ class EchoService:
                     "resource_version": 2,
                 }
             )
-            self.store.save("run", failed)
+            if self.activity is None:
+                self.store.save("run", failed, principal)
+            else:
+                self.activity.complete_after_persist(
+                    str(run.id),
+                    lambda: self.store.save("run", failed, principal),
+                )
             raise error from exc
         finally:
             report_path.unlink(missing_ok=True)
 
         completed_at = utc_now()
         result = EvaluationResult(
-            id=uuid4(),
+            id=result_id,
             run_id=run.id,
             score=measurement.score,
             metrics=self._metrics_for(suite.evaluator, measurement),
@@ -278,8 +417,14 @@ class EchoService:
                 "resource_version": 2,
             }
         )
-        self.store.save_outcome(result, gate, succeeded)
-        self.store.save_samples(samples)
+
+        def persist_outcome() -> None:
+            self.store.save_outcome(result, gate, succeeded, principal, samples=samples)
+
+        if self.activity is None:
+            persist_outcome()
+        else:
+            self.activity.complete_after_persist(str(run.id), persist_outcome)
         return succeeded
 
     def _binding_for(self, binding_id: str, suite: EvaluationSuite) -> RunnerBinding:
@@ -299,7 +444,12 @@ class EchoService:
         return binding
 
     def _engine_for(
-        self, binding: RunnerBinding, suite: EvaluationSuite
+        self,
+        binding: RunnerBinding,
+        suite: EvaluationSuite,
+        *,
+        trace_id: str | None = None,
+        span_id: str | None = None,
     ) -> EvaluationExecutionPort:
         """Select the runner declared by the binding; fail closed if unavailable. | 选引擎。"""
 
@@ -323,7 +473,12 @@ class EchoService:
                 retryable=True,
             )
         profile = self.get_judge_profile(suite.judge_profile_id)
-        return ExchangeJudgePort(profile, bearer_token=self.judge_bearer_token)
+        return ExchangeJudgePort(
+            profile,
+            bearer_token=self.judge_bearer_token,
+            trace_id=trace_id,
+            span_id=span_id,
+        )
 
     def _persist_samples(
         self,
@@ -367,14 +522,161 @@ class EchoService:
         metrics: dict[str, float] = {"score": measurement.score}
         if evaluator == "exact_match.v1":
             metrics["exactMatch"] = measurement.score
+            metrics["exact_match"] = measurement.score
         if evaluator == "llm_judge.v1":
             metrics["judgeScore"] = measurement.score
         return metrics
 
-    def get_run(self, run_id: UUID) -> EvaluationRun:
+    @staticmethod
+    def _write_evaluation_report(
+        report_path: Path,
+        *,
+        result_id: UUID,
+        input_digest: str,
+        report_context: EvaluationReportContext,
+        measurement: EngineEvaluation,
+    ) -> None:
+        """Write the bounded, target-bound report without copying answer text."""
+
+        sample_results: dict[str, bool] = {}
+        for sample in measurement.samples:
+            sample_id = sample.input_record.get("sampleId")
+            if not isinstance(sample_id, str) or not sample_id:
+                raise EvaluationEngineFailure(
+                    "evaluation.runner.v1 omitted a stable sampleId from its evidence."
+                )
+            if sample_id in sample_results:
+                raise EvaluationEngineFailure(
+                    "evaluation.runner.v1 returned duplicate sampleId evidence."
+                )
+            sample_results[sample_id] = sample.passed
+
+        expected_ids = {
+            sample.sample_id for sample in report_context.samples if sample.status == "EVALUATED"
+        }
+        if set(sample_results) != expected_ids:
+            raise EvaluationEngineFailure(
+                "evaluation.runner.v1 evidence does not match the submitted sample set."
+            )
+
+        samples: list[dict[str, object]] = []
+        for report_sample in report_context.samples:
+            if (
+                not report_sample.sample_id
+                or len(report_sample.sample_id) > 500
+                or (
+                    report_sample.status in {"FAILED", "SKIPPED"}
+                    and (
+                        not report_sample.code
+                        or len(report_sample.code) > 100
+                        or report_sample.message is None
+                        or len(report_sample.message) > 2000
+                    )
+                )
+            ):
+                raise EvaluationEngineFailure(
+                    "Echo cannot produce a schema-valid per-sample report record."
+                )
+            item: dict[str, object] = {
+                "sampleId": report_sample.sample_id,
+                "status": report_sample.status,
+            }
+            if report_sample.status == "EVALUATED":
+                item["exactMatch"] = sample_results[report_sample.sample_id]
+            if report_sample.code is not None:
+                item["code"] = report_sample.code
+            if report_sample.message is not None:
+                item["message"] = report_sample.message
+            samples.append(item)
+
+        evaluated = len(expected_ids)
+        matched = sum(sample_results.values())
+        if (
+            evaluated == 0
+            or measurement.record_count != evaluated
+            or measurement.passed_count != matched
+            or abs(measurement.score - matched / evaluated) > 1e-12
+        ):
+            raise EvaluationEngineFailure(
+                "evaluation.runner.v1 returned aggregate measurements inconsistent "
+                "with its evidence."
+            )
+        failures: list[dict[str, object]] = []
+        skips: list[dict[str, object]] = []
+        for report_item in samples:
+            if report_item["status"] not in {"FAILED", "SKIPPED"}:
+                continue
+            summary = {"sampleId": report_item["sampleId"]}
+            if "code" in report_item:
+                summary["code"] = report_item["code"]
+            if "message" in report_item:
+                summary["message"] = report_item["message"]
+            if report_item["status"] == "FAILED":
+                failures.append(summary)
+            else:
+                skips.append(summary)
+        report = {
+            "schemaVersion": "cyrene.echo.evaluation-report.v1",
+            "resultId": str(result_id),
+            "target": {
+                "versionRef": report_context.target_dataset_version,
+                "packageDigest": report_context.target_package_digest,
+            },
+            "inputDigest": input_digest,
+            "evaluator": {"id": "exact_match.v1", "version": "1"},
+            "coverage": {
+                "total": len(report_context.samples),
+                "evaluated": evaluated,
+                "failed": sum(1 for sample in report_context.samples if sample.status == "FAILED"),
+                "skipped": sum(
+                    1 for sample in report_context.samples if sample.status == "SKIPPED"
+                ),
+            },
+            "metrics": [
+                {
+                    "name": "exact_match",
+                    "matched": matched,
+                    "evaluated": evaluated,
+                    "value": matched / evaluated,
+                }
+            ],
+            "samples": samples,
+            "failures": failures,
+            "skips": skips,
+        }
+        report_path.write_text(
+            json.dumps(report, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _align_report_sample_indexes(
+        measurement: EngineEvaluation,
+        report_context: EvaluationReportContext,
+    ) -> EngineEvaluation:
+        """Restore original input positions after reference-less rows were filtered."""
+
+        indexes_by_sample_id = {
+            sample.sample_id: sample.sample_index for sample in report_context.samples
+        }
+        aligned = []
+        for sample in measurement.samples:
+            sample_id = sample.input_record.get("sampleId")
+            if not isinstance(sample_id, str) or sample_id not in indexes_by_sample_id:
+                raise EvaluationEngineFailure(
+                    "evaluation.runner.v1 returned a sample outside the imported input."
+                )
+            aligned.append(
+                sample.model_copy(update={"sample_index": indexes_by_sample_id[sample_id]})
+            )
+        return measurement.model_copy(update={"samples": aligned})
+
+    def get_run(
+        self, run_id: UUID, principal: WorkspaceServicePrincipal | None = None
+    ) -> EvaluationRun:
         """Read an EvaluationRun including persisted failures. | 读取评估运行。"""
 
-        run = self.store.get_run(run_id)
+        run = self.store.get_run(run_id, principal)
         if run is None:
             raise EchoError(
                 code="ECHO_RUN_NOT_FOUND",
@@ -384,10 +686,12 @@ class EchoService:
             )
         return run
 
-    def get_result(self, result_id: UUID) -> EvaluationResult:
+    def get_result(
+        self, result_id: UUID, principal: WorkspaceServicePrincipal | None = None
+    ) -> EvaluationResult:
         """Read an immutable EvaluationResult. | 读取不可变评估结果。"""
 
-        result = self.store.get_result(result_id)
+        result = self.store.get_result(result_id, principal)
         if result is None:
             raise EchoError(
                 code="ECHO_RESULT_NOT_FOUND",
@@ -397,10 +701,59 @@ class EchoService:
             )
         return result
 
-    def get_gate(self, gate_id: UUID) -> GateDecision:
+    def export_result_report(
+        self,
+        result_id: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> bytes:
+        """Resolve report bytes only after the scoped result/run/suite chain passes."""
+
+        result = self.get_result(result_id, principal)
+        run = self.get_run(result.run_id, principal)
+        suite = self.store.get_suite(run.suite_id, principal)
+        if suite is None:
+            raise EchoError(
+                code="ECHO_RESULT_NOT_FOUND",
+                title="Evaluation result not found",
+                detail="No evaluation result exists in the authenticated Workspace scope.",
+                status=404,
+            )
+        try:
+            payload = self.artifacts.resolve(result.report_artifact).read_bytes()
+        except OSError as exc:
+            raise EchoError(
+                code="ECHO_REPORT_UNAVAILABLE",
+                title="Evaluation report unavailable",
+                detail="The stored report artifact cannot be read.",
+                status=500,
+            ) from exc
+        try:
+            report = json.loads(payload)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise EchoError(
+                code="ECHO_REPORT_EXPORT_UNAVAILABLE",
+                title="Evaluation report export unavailable",
+                detail="This result does not contain a target-bound evaluation report.",
+                status=422,
+            ) from exc
+        if (
+            not isinstance(report, dict)
+            or report.get("schemaVersion") != "cyrene.echo.evaluation-report.v1"
+        ):
+            raise EchoError(
+                code="ECHO_REPORT_EXPORT_UNAVAILABLE",
+                title="Evaluation report export unavailable",
+                detail="This result does not contain a target-bound evaluation report.",
+                status=422,
+            )
+        return payload
+
+    def get_gate(
+        self, gate_id: UUID, principal: WorkspaceServicePrincipal | None = None
+    ) -> GateDecision:
         """Read an immutable GateDecision. | 读取不可变门禁决策。"""
 
-        gate = self.store.get_gate(gate_id)
+        gate = self.store.get_gate(gate_id, principal)
         if gate is None:
             raise EchoError(
                 code="ECHO_GATE_NOT_FOUND",
@@ -413,6 +766,7 @@ class EchoService:
     # ──────────────────────────────────────────────────────────────────
     # SECTION: Per-sample review, human annotation, filtering
     # ──────────────────────────────────────────────────────────────────
+    # 中文:逐样本审核、人工标注与筛选。
 
     def list_samples(
         self,
@@ -422,23 +776,30 @@ class EchoService:
         only_annotated: bool | None = None,
         limit: int = 200,
         offset: int = 0,
+        principal: WorkspaceServicePrincipal | None = None,
     ) -> list[SampleRecord]:
         """List per-sample records with optional filters. | 列出样本。"""
 
-        self._require_run(run_id)
+        self._require_run(run_id, principal)
         return self.store.list_samples(
             run_id,
             only_passed=only_passed,
             only_annotated=only_annotated,
             limit=limit,
             offset=offset,
+            principal=principal,
         )
 
-    def get_sample(self, run_id: UUID, sample_index: int) -> SampleRecord:
+    def get_sample(
+        self,
+        run_id: UUID,
+        sample_index: int,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> SampleRecord:
         """Read one per-sample record with its annotation context. | 读取单个样本。"""
 
-        self._require_run(run_id)
-        samples = self.store.list_samples(run_id, limit=10000, offset=0)
+        self._require_run(run_id, principal)
+        samples = self.store.list_samples(run_id, limit=10000, offset=0, principal=principal)
         for sample in samples:
             if sample.sample_index == sample_index:
                 return sample
@@ -450,12 +811,17 @@ class EchoService:
             resource_ref=f"/api/v1/evaluation-runs/{run_id}/samples/{sample_index}",
         )
 
-    def annotate_sample(self, run_id: UUID, command: CreateAnnotationRequest) -> HumanAnnotation:
+    def annotate_sample(
+        self,
+        run_id: UUID,
+        command: CreateAnnotationRequest,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> HumanAnnotation:
         """Create or update a human annotation (idempotent per sample+reviewer). | 标注样本。"""
 
-        self._require_run(run_id)
-        self.get_sample(run_id, command.sample_index)
-        existing = self._find_annotation(run_id, command.sample_index, command.reviewer)
+        self._require_run(run_id, principal)
+        self.get_sample(run_id, command.sample_index, principal)
+        existing = self._find_annotation(run_id, command.sample_index, command.reviewer, principal)
         now = utc_now()
         if existing is not None:
             updated = existing.model_copy(
@@ -468,7 +834,7 @@ class EchoService:
                     "resource_version": existing.resource_version + 1,
                 }
             )
-            self.store.save("annotation", updated)
+            self.store.save("annotation", updated, principal)
             return updated
         annotation = HumanAnnotation(
             id=uuid4(),
@@ -483,25 +849,35 @@ class EchoService:
             updated_at=now,
             resource_version=1,
         )
-        self.store.save("annotation", annotation)
+        self.store.save("annotation", annotation, principal)
         return annotation
 
-    def list_annotations(self, run_id: UUID) -> list[HumanAnnotation]:
+    def list_annotations(
+        self,
+        run_id: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> list[HumanAnnotation]:
         """List human annotations for a run. | 列出标注。"""
 
-        self._require_run(run_id)
-        return self.store.list_annotations(run_id)
+        self._require_run(run_id, principal)
+        return self.store.list_annotations(run_id, principal)
 
     def _find_annotation(
-        self, run_id: UUID, sample_index: int, reviewer: str
+        self,
+        run_id: UUID,
+        sample_index: int,
+        reviewer: str,
+        principal: WorkspaceServicePrincipal | None = None,
     ) -> HumanAnnotation | None:
-        for annotation in self.store.list_annotations(run_id):
+        for annotation in self.store.list_annotations(run_id, principal):
             if annotation.sample_index == sample_index and annotation.reviewer == reviewer:
                 return annotation
         return None
 
-    def _require_run(self, run_id: UUID) -> None:
-        if self.store.get_run(run_id) is None:
+    def _require_run(
+        self, run_id: UUID, principal: WorkspaceServicePrincipal | None = None
+    ) -> None:
+        if self.store.get_run(run_id, principal) is None:
             raise EchoError(
                 code="ECHO_RUN_NOT_FOUND",
                 title="EvaluationRun not found",
@@ -512,14 +888,20 @@ class EchoService:
     # ──────────────────────────────────────────────────────────────────
     # SECTION: FeedbackSet + Catalyst-compatible export
     # ──────────────────────────────────────────────────────────────────
+    # 中文:FeedbackSet 与 Catalyst 兼容导出。
 
     def create_feedback_set(
-        self, command: CreateFeedbackSetRequest, idempotency_key: str | None
+        self,
+        command: CreateFeedbackSetRequest,
+        idempotency_key: str | None,
+        principal: WorkspaceServicePrincipal | None = None,
     ) -> FeedbackSet:
         """Build a feedback set from explicitly user-selected samples only. | 创建反馈集。"""
 
-        self._require_run(command.run_id)
-        samples = self.store.list_samples(command.run_id, limit=10000, offset=0)
+        self._require_run(command.run_id, principal)
+        samples = self.store.list_samples(
+            command.run_id, limit=10000, offset=0, principal=principal
+        )
         indexes = {sample.sample_index for sample in samples}
         unknown = [idx for idx in command.sample_indexes if idx not in indexes]
         if unknown:
@@ -530,7 +912,7 @@ class EchoService:
                 status=422,
                 resource_ref=f"/api/v1/evaluation-runs/{command.run_id}/samples",
             )
-        annotations = self.store.list_annotations(command.run_id)
+        annotations = self.store.list_annotations(command.run_id, principal)
         annotation_map = {annotation.sample_index: annotation for annotation in annotations}
         orphan = [
             aid
@@ -558,9 +940,11 @@ class EchoService:
                     status=422,
                 )
         digest = request_hash(command)
-        replay_id = self.store.resolve_idempotency("create-feedback-set", idempotency_key, digest)
+        replay_id = self.store.resolve_idempotency(
+            "create-feedback-set", idempotency_key, digest, principal
+        )
         if replay_id is not None:
-            existing = self.store.get_feedback_set(UUID(replay_id))
+            existing = self.store.get_feedback_set(UUID(replay_id), principal)
             assert existing is not None
             return existing
         now = utc_now()
@@ -581,19 +965,24 @@ class EchoService:
             updated_at=now,
             resource_version=1,
         )
-        self.store.save("feedback_set", feedback_set)
+        self.store.save("feedback_set", feedback_set, principal)
         self.store.remember_idempotency(
             scope="create-feedback-set",
             key=idempotency_key,
             digest=digest,
             resource_id=feedback_set.id,
+            principal=principal,
         )
         return feedback_set
 
-    def get_feedback_set(self, feedback_set_id: UUID) -> FeedbackSet:
+    def get_feedback_set(
+        self,
+        feedback_set_id: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> FeedbackSet:
         """Read a FeedbackSet. | 读取 FeedbackSet。"""
 
-        feedback_set = self.store.get_feedback_set(feedback_set_id)
+        feedback_set = self.store.get_feedback_set(feedback_set_id, principal)
         if feedback_set is None:
             raise EchoError(
                 code="ECHO_FEEDBACK_SET_NOT_FOUND",
@@ -603,23 +992,34 @@ class EchoService:
             )
         return feedback_set
 
-    def list_feedback_sets(self, run_id: UUID | None = None) -> list[FeedbackSet]:
+    def list_feedback_sets(
+        self,
+        run_id: UUID | None = None,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> list[FeedbackSet]:
         """List feedback sets, optionally for one run. | 列出反馈集。"""
 
-        return self.store.list_feedback_sets(run_id)
+        return self.store.list_feedback_sets(run_id, principal)
 
-    def export_feedback_set(self, feedback_set_id: UUID) -> tuple[FeedbackSet, bytes]:
+    def export_feedback_set(
+        self,
+        feedback_set_id: UUID,
+        principal: WorkspaceServicePrincipal | None = None,
+    ) -> tuple[FeedbackSet, bytes]:
         """Export a feedback set as Catalyst-compatible JSONL; never auto-deliver. | 导出。"""
 
-        feedback_set = self.get_feedback_set(feedback_set_id)
+        feedback_set = self.get_feedback_set(feedback_set_id, principal)
         if feedback_set.export_artifact is not None:
             # A selected export is immutable; later annotations need a new FeedbackSet.
+            # 中文:选定的导出不可变;后续标注必须创建新的 FeedbackSet。
             return feedback_set, self.artifacts.resolve(feedback_set.export_artifact).read_bytes()
-        run = self.get_run(feedback_set.run_id)
-        suite = self.get_suite(run.suite_id)
-        samples = self.store.list_samples(feedback_set.run_id, limit=10000, offset=0)
+        run = self.get_run(feedback_set.run_id, principal)
+        suite = self.get_suite(run.suite_id, principal)
+        samples = self.store.list_samples(
+            feedback_set.run_id, limit=10000, offset=0, principal=principal
+        )
         sample_map = {sample.sample_index: sample for sample in samples}
-        annotations = self.store.list_annotations(feedback_set.run_id)
+        annotations = self.store.list_annotations(feedback_set.run_id, principal)
         annotation_map = {
             annotation.sample_index: annotation
             for annotation in annotations
@@ -647,7 +1047,7 @@ class EchoService:
                 "resource_version": feedback_set.resource_version + 1,
             }
         )
-        self.store.save("feedback_set", exported)
+        self.store.save("feedback_set", exported, principal)
         return exported, payload
 
     def _candidate_row(

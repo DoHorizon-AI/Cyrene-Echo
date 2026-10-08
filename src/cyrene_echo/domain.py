@@ -15,7 +15,7 @@ from enum import StrEnum
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -216,6 +216,8 @@ class ProblemDetails(ContractModel):
     retryable: bool
     trace_id: str
     resource_ref: str | None = None
+    request_id: str | None = None
+    recovery_action: str | None = None
 
 
 class UsageFacts(ContractModel):
@@ -314,6 +316,14 @@ class CreateAnnotationRequest(ContractModel):
     note: str = Field(default="", max_length=2000)
 
 
+class ProductResourceRef(ContractModel):
+    """Product identity without imported business authority. | 外部产品资源身份。"""
+
+    uri: str = Field(pattern=r"^(cyrene|https?)://[^\s]+$", max_length=2000)
+    id: str = Field(min_length=1, max_length=512)
+    resource_version: int = Field(ge=1)
+
+
 class FeedbackSet(ContractModel):
     """User-selected training candidates anchored to one run. | 用户显式选择的训练候选集。"""
 
@@ -329,6 +339,18 @@ class FeedbackSet(ContractModel):
     created_at: datetime
     updated_at: datetime
     resource_version: int = Field(ge=1)
+
+
+class FeedbackHandoff(ContractModel):
+    """Durable internal acknowledgement of one Catalyst handoff. | 持久交接回执。"""
+
+    id: UUID
+    source_resource_version: int = Field(ge=1)
+    dataset_id: UUID | None = None
+    target_resource: ProductResourceRef
+    status: Literal["DRAFT", "PREPARED", "STARTED"]
+    open_in: str = Field(min_length=1, max_length=2000)
+    confirmed_at: datetime
 
 
 class CreateFeedbackSetRequest(ContractModel):
@@ -368,22 +390,34 @@ class TrainingCandidateRow(ContractModel):
     human_annotation: dict[str, Any] | None = None
 
 
-class ProductResourceRef(ContractModel):
-    """Product identity without imported business authority. | 外部产品资源身份。"""
-
-    uri: str = Field(pattern=r"^(cyrene|https?)://[^\s]+$", max_length=2000)
-    id: str = Field(min_length=1, max_length=512)
-    resource_version: int = Field(ge=1)
-
-
 class ImportEvaluationInput(ContractModel):
     """Immutable source snapshot for a future evaluation. | 待评估的不可变快照。"""
 
     source_ref: ProductResourceRef
     artifact: ArtifactRef
-    format: Literal["NAVIGATOR_TEXT_JSONL_V1"]
+    format: Literal["NAVIGATOR_TEXT_JSONL_V1", "CYRENE_REFERENCE_ACTUAL_JSONL_V1"]
     content_refs: list[str] = Field(min_length=1, max_length=2000)
     provenance_refs: list[str] = Field(default_factory=list, max_length=100)
+    target_dataset_version: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=2000,
+        pattern=r"^catalyst://[^\s]+$",
+    )
+    target_package_artifact: ArtifactRef | None = None
+
+    @model_validator(mode="after")
+    def require_target_for_reference_actual(self) -> ImportEvaluationInput:
+        """Bind the general evaluation format to the exact target package and version."""
+
+        if self.format == "CYRENE_REFERENCE_ACTUAL_JSONL_V1" and (
+            self.target_dataset_version is None or self.target_package_artifact is None
+        ):
+            raise ValueError(
+                "CYRENE_REFERENCE_ACTUAL_JSONL_V1 requires targetDatasetVersion "
+                "and targetPackageArtifact."
+            )
+        return self
 
 
 class EvaluationInput(ImportEvaluationInput):

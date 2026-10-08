@@ -351,7 +351,9 @@ components:
           $ref: '#/components/schemas/ArtifactRef'
         format:
           type: string
-          const: NAVIGATOR_TEXT_JSONL_V1
+          enum:
+          - NAVIGATOR_TEXT_JSONL_V1
+          - CYRENE_REFERENCE_ACTUAL_JSONL_V1
           title: Format
         contentRefs:
           items:
@@ -366,6 +368,19 @@ components:
           type: array
           maxItems: 100
           title: Provenancerefs
+        targetDatasetVersion:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 2000
+            pattern: ^catalyst://[^\s]+$
+          - type: 'null'
+          title: Targetdatasetversion
+        targetPackageArtifact:
+          anyOf:
+          - $ref: '#/components/schemas/ArtifactRef'
+          - type: 'null'
+          title: Targetpackageartifact
         id:
           type: string
           format: uuid
@@ -399,6 +414,21 @@ components:
       - createdAt
       title: EvaluationInput
       description: A draft never invokes an evaluator. | 草稿不会调用评估器。
+      allOf:
+      - if:
+          properties:
+            format: {const: CYRENE_REFERENCE_ACTUAL_JSONL_V1}
+          required: [format]
+        then:
+          required: [targetDatasetVersion, targetPackageArtifact]
+          properties:
+            targetDatasetVersion:
+              type: string
+              minLength: 1
+              maxLength: 2000
+              pattern: ^catalyst://[^\s]+$
+            targetPackageArtifact:
+              $ref: '#/components/schemas/ArtifactRef'
     EvaluationRun:
       $ref: ./evaluation-run.schema.json
     HTTPValidationError:
@@ -440,7 +470,9 @@ components:
           $ref: '#/components/schemas/ArtifactRef'
         format:
           type: string
-          const: NAVIGATOR_TEXT_JSONL_V1
+          enum:
+          - NAVIGATOR_TEXT_JSONL_V1
+          - CYRENE_REFERENCE_ACTUAL_JSONL_V1
           title: Format
         contentRefs:
           items:
@@ -455,6 +487,19 @@ components:
           type: array
           maxItems: 100
           title: Provenancerefs
+        targetDatasetVersion:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 2000
+            pattern: ^catalyst://[^\s]+$
+          - type: 'null'
+          title: Targetdatasetversion
+        targetPackageArtifact:
+          anyOf:
+          - $ref: '#/components/schemas/ArtifactRef'
+          - type: 'null'
+          title: Targetpackageartifact
       additionalProperties: false
       type: object
       required:
@@ -464,6 +509,21 @@ components:
       - contentRefs
       title: ImportEvaluationInput
       description: Immutable source snapshot for a future evaluation. | 待评估的不可变快照。
+      allOf:
+      - if:
+          properties:
+            format: {const: CYRENE_REFERENCE_ACTUAL_JSONL_V1}
+          required: [format]
+        then:
+          required: [targetDatasetVersion, targetPackageArtifact]
+          properties:
+            targetDatasetVersion:
+              type: string
+              minLength: 1
+              maxLength: 2000
+              pattern: ^catalyst://[^\s]+$
+            targetPackageArtifact:
+              $ref: '#/components/schemas/ArtifactRef'
     ProductFailure:
       properties:
         code:
