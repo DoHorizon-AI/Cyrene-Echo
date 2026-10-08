@@ -101,6 +101,91 @@ workflow 按触发提交查找不可变 release；release 缺失或不匹配时�
 分支和提交执行相同验证。它不会构建或推送镜像、使用可变 tag 或创建 Azure app。现有 Azure
 OIDC 与 Workspace-auth rollout 门禁、内网 ingress 策略，以及健康 revision/镜像验证均保持不变。
 
+On 2026-10-08, both GitHub's default attestation bundle and the OCI-referrer
+bundle verified the existing official Echo preview image digest
+`sha256:3aa667dc3c8f7e2403ca6db55a4074443703fcf9b2fe6854911ae91485c9bb91`.
+The statement subject name is `ghcr.io/dohorizon-ai/cyrene-echo`; `oci://` is
+the `gh attestation verify` locator syntax, not part of the in-toto subject
+name. The exact constrained verifier invocation was:
+
+```bash
+gh attestation verify \
+  'oci://ghcr.io/dohorizon-ai/cyrene-echo@sha256:3aa667dc3c8f7e2403ca6db55a4074443703fcf9b2fe6854911ae91485c9bb91' \
+  --repo DoHorizon-AI/Cyrene-Echo \
+  --signer-workflow DoHorizon-AI/Cyrene-Echo/.github/workflows/component-release.yml \
+  --source-ref refs/heads/develop \
+  --source-digest 35d96fe6f16b77d589df74b072ecf9a4ed2fe359 \
+  --predicate-type https://slsa.dev/provenance/v1 \
+  --format json
+```
+
+Repeating that command with `--bundle-from-oci` also passed. The signed
+statement binds the exact image digest to the Echo release workflow, `develop`,
+and source commit `35d96fe6f16b77d589df74b072ecf9a4ed2fe359`. This records a
+live verification of that already published image; it does not replace the
+release workflow's validation of future image digests.
+
+2026-10-08，当日使用 GitHub 默认 attestation bundle 和 OCI referrer bundle 两条路径，均通过
+对现有官方 Echo preview 镜像摘要
+`sha256:3aa667dc3c8f7e2403ca6db55a4074443703fcf9b2fe6854911ae91485c9bb91` 的验证。statement 的
+subject name 是 `ghcr.io/dohorizon-ai/cyrene-echo`；`oci://` 仅用于 `gh attestation verify` 的
+定位语法，不属于 in-toto subject name。上方完整命令约束了仓库、签名 workflow、源码 ref、源码摘要和
+predicate；增加 `--bundle-from-oci` 后再次执行也通过。已签名 statement 将精确镜像摘要绑定到 Echo
+release workflow、`develop` 和源码提交 `35d96fe6f16b77d589df74b072ecf9a4ed2fe359`。这是对已发布镜像
+的实时验证记录，不能代替后续新镜像的发布验证。
+
+The Linux OCI publication has a distinct Ubuntu 24.04 host manifest with
+target `{os: linux, osVersion: 24.04, distribution: ubuntu,
+distributionVersion: 24.04, architecture: x86_64, runtime: oci}`. Its image
+platform remains Linux `amd64`; this is a host compatibility target, not a
+Linux-native bundle. The Windows Docker Desktop manifest remains a separate
+host target for the same signed image digest.
+
+On Linux, the Plugins supervisor's direct `connection_ref` resolves to a
+loopback gRPC endpoint. An OCI runtime that consumes this ref must use host
+networking and inject the exact ref as
+`CYRENE_EVALUATION_RUNNER_CONNECTION_REF`. Bind Echo itself to
+`ECHO_HOST=127.0.0.1` and do not publish container ports; the image entrypoint's
+default `0.0.0.0` bind is for a separately authenticated ingress deployment.
+The Product keeps its database and artifacts in installer-owned persistent
+paths at `/data/echo` and `/data/artifacts`. The verified container profile
+used UID `10001`, dropped all Linux capabilities, mounted a read-only root
+filesystem, and supplied a bounded `/tmp` tmpfs.
+
+On 2026-10-08, a local Docker 29.8.0 smoke used the official image digest
+`sha256:3aa667dc3c8f7e2403ca6db55a4074443703fcf9b2fe6854911ae91485c9bb91`
+and a real Plugins exact-match endpoint returning a loopback `grpc://` ref.
+With `--network host`, the Echo API completed an exact-match evaluation
+(`201`, score `0.5`); without the ref, health remained `200` and evaluation
+failed closed with `422 ECHO_EVALUATION_FAILED`. Removing and recreating the
+container with the same data mount preserved the run and result. This proves
+the Linux host-loopback transport and container data-mount behavior for that
+published image. The local endpoint was started through the Plugins SDK, not
+Platform supervision, and the smoke did not exercise Platform admission or
+the installer uninstall transaction.
+
+Linux OCI 发布会为 Ubuntu 24.04 主机生成独立 manifest，目标为
+`{os: linux, osVersion: 24.04, distribution: ubuntu, distributionVersion: 24.04,
+architecture: x86_64, runtime: oci}`。镜像平台仍是 Linux `amd64`；这是主机兼容目标，不是
+Linux 原生 bundle。Windows Docker Desktop manifest 仍是同一签名镜像摘要对应的独立主机目标。
+
+在 Linux 上，Plugins supervisor 的 direct `connection_ref` 指向 loopback gRPC endpoint。
+消费该 ref 的 OCI runtime 必须使用 host networking，并把精确 ref 注入
+`CYRENE_EVALUATION_RUNNER_CONNECTION_REF`。Echo 自身应绑定
+`ECHO_HOST=127.0.0.1` 且不发布容器端口；镜像 entrypoint 的默认 `0.0.0.0` bind 仅用于另行配置
+认证 ingress 的部署。Product 数据库与制品应放在 installer 管理的持久目录
+`/data/echo` 和 `/data/artifacts`。已验证容器配置使用 UID `10001`、移除全部 Linux capabilities、
+只读 root filesystem，并为 `/tmp` 提供有界 tmpfs。
+
+2026-10-08，本地 Docker 29.8.0 使用官方镜像摘要
+`sha256:3aa667dc3c8f7e2403ca6db55a4074443703fcf9b2fe6854911ae91485c9bb91` 和真实 Plugins
+exact-match endpoint 运行 smoke；endpoint 由 Plugins SDK 返回 loopback `grpc://` ref。设置
+`--network host` 后，Echo API 完成真实 exact-match 评估（`201`，score `0.5`）；缺少 ref 时 health
+仍为 `200`，评估 fail-closed 并返回 `422 ECHO_EVALUATION_FAILED`。删除并重建容器、复用同一数据挂载后，
+原 run 和 result 仍可读取。这证明该已发布镜像的 Linux host-loopback transport 与容器数据挂载行为。
+本地 endpoint 由 Plugins SDK 启动，不是 Platform supervisor；该 smoke 没有验证 Platform admission 或
+installer uninstall transaction。
+
 ## 4. Public-source boundary / 公开源码边界
 
 The target is a public clean-root source clone with no private checkout, credential,
