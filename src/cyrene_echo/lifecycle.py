@@ -346,13 +346,21 @@ class LifecycleActions:
             finally:
                 if engine_source_path is not None:
                     engine_source_path.unlink(missing_ok=True)
-            resource.state = "STARTED"
-            resource.evaluation_run = ProductResourceRef(
-                uri=f"cyrene://echo/evaluation-runs/{run.id}",
-                id=str(run.id),
-                resource_version=run.resource_version,
+            updated_ref = resource.resource_ref.model_copy(
+                update={"resource_version": resource.resource_ref.resource_version + 1}
             )
-            self.service.store.save("input", resource, principal)
+            updated_resource = resource.model_copy(
+                update={
+                    "state": "STARTED",
+                    "resource_ref": updated_ref,
+                    "evaluation_run": ProductResourceRef(
+                        uri=f"cyrene://echo/evaluation-runs/{run.id}",
+                        id=str(run.id),
+                        resource_version=run.resource_version,
+                    ),
+                }
+            )
+            self.service.store.save("input", updated_resource, principal)
             return run
 
     def send_feedback(
@@ -398,6 +406,28 @@ class LifecycleActions:
                     detail="Configure the Catalyst Product URL before sending feedback.",
                     status=503,
                 )
+            if feedback.export_artifact is None:
+                samples = self.service.store.list_samples(
+                    feedback.run_id, limit=10000, offset=0, principal=principal
+                )
+                sample_map = {sample.sample_index: sample for sample in samples}
+                lineage_preview = [f"cyrene://echo/evaluation-runs/{feedback.run_id}"]
+                for sample_index in feedback.sample_indexes:
+                    sample = sample_map.get(sample_index)
+                    if sample is not None:
+                        lineage_preview.extend(
+                            ref
+                            for ref in sample.input_record.get("provenanceRefs", [])
+                            if isinstance(ref, str)
+                        )
+                lineage_preview = list(dict.fromkeys(lineage_preview))
+                if len(lineage_preview) > 100:
+                    raise EchoError(
+                        code="ECHO_PROVENANCE_LIMIT",
+                        title="Feedback selection too broad",
+                        detail="Select a FeedbackSet with at most 100 distinct lineage references.",
+                        status=422,
+                    )
             feedback, payload = self.service.export_feedback_set(identifier, principal)
             assert feedback.export_artifact is not None
             lineage = [f"cyrene://echo/evaluation-runs/{feedback.run_id}"]

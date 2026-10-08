@@ -265,21 +265,33 @@ class EchoStore:
         gate: GateDecision,
         run: EvaluationRun,
         principal: WorkspaceServicePrincipal | None = None,
+        samples: list[SampleRecord] | None = None,
     ) -> None:
-        """Atomically commit result, gate, then terminal run. | 原子提交结果、门禁与运行。"""
+        """Atomically commit immutable result, gate, samples, and terminal run. | 原子提交。"""
 
-        documents = [
+        organization_id = principal.organization_id if principal else None
+        workspace_id = principal.workspace_id if principal else None
+        immutable_rows = [
             ("result", str(result.id), result.model_dump_json(by_alias=True, exclude_none=True)),
             ("gate", str(gate.id), gate.model_dump_json(by_alias=True, exclude_none=True)),
-            ("run", str(run.id), run.model_dump_json(by_alias=True, exclude_none=True)),
         ]
+        if samples:
+            for sample in samples:
+                immutable_rows.append(
+                    ("sample", str(sample.id), sample.model_dump_json(by_alias=True, exclude_none=True))
+                )
+        run_row = ("run", str(run.id), run.model_dump_json(by_alias=True, exclude_none=True))
         with self._lock, self._connection:
-            organization_id = principal.organization_id if principal else None
-            workspace_id = principal.workspace_id if principal else None
-            self._connection.executemany(
+            for kind, item_id, doc in immutable_rows:
+                self._connection.execute(
+                    "INSERT INTO resources("
+                    "kind, id, document, organization_id, workspace_id) VALUES (?, ?, ?, ?, ?)",
+                    (kind, item_id, doc, organization_id, workspace_id),
+                )
+            self._connection.execute(
                 "INSERT OR REPLACE INTO resources("
                 "kind, id, document, organization_id, workspace_id) VALUES (?, ?, ?, ?, ?)",
-                [(*row, organization_id, workspace_id) for row in documents],
+                (*run_row, organization_id, workspace_id),
             )
 
     def save_samples(
@@ -305,7 +317,7 @@ class EchoStore:
         ]
         with self._lock, self._connection:
             self._connection.executemany(
-                "INSERT OR REPLACE INTO resources("
+                "INSERT INTO resources("
                 "kind, id, document, organization_id, workspace_id) VALUES (?, ?, ?, ?, ?)",
                 rows,
             )

@@ -188,14 +188,21 @@ $("samples-btn").addEventListener("click", async () => {
       <td><input data-note="${s.sampleIndex}" placeholder="纠正/备注" value="${esc(annByIndex.get(s.sampleIndex)?.note ?? "")}"></td>`;
     tbody.appendChild(tr);
   }
-  const annotate = document.createElement("button");
-  annotate.textContent = "保存标注";
+  let annotate = document.getElementById("annotate-btn");
+  if (!annotate) {
+    annotate = document.createElement("button");
+    annotate.id = "annotate-btn";
+    annotate.textContent = "保存标注";
+    tbody.parentElement.insertAdjacentElement("afterend", annotate);
+  }
   annotate.onclick = async () => {
-    const idx = Number(document.querySelector(`[data-score]`)?.dataset.score);
     for (const row of tbody.querySelectorAll("tr")) {
-      const sampleIndex = Number(row.querySelector("[data-score]").dataset.score);
-      const manualScore = row.querySelector(`[data-score="${sampleIndex}"]`).value;
-      const note = row.querySelector(`[data-note="${sampleIndex}"]`).value;
+      const scoreInput = row.querySelector("[data-score]");
+      if (!scoreInput) continue;
+      const sampleIndex = Number(scoreInput.dataset.score);
+      const manualScore = scoreInput.value;
+      const noteInput = row.querySelector(`[data-note="${sampleIndex}"]`);
+      const note = noteInput ? noteInput.value : "";
       await fetch(`/api/v1/evaluation-runs/${runId}/annotations`, {
         method: "POST",
         body: JSON.stringify({ sampleIndex, reviewer: "ui", manualScore: manualScore === "" ? null : Number(manualScore), preference: note ? "prefer_corrected" : null, note, correctedOutput: note || null }),
@@ -204,7 +211,6 @@ $("samples-btn").addEventListener("click", async () => {
     }
     alert("标注已保存");
   };
-  tbody.parentElement.insertAdjacentElement("afterend", annotate);
 });
 
 $("export-btn").addEventListener("click", async () => {
@@ -221,7 +227,7 @@ $("export-btn").addEventListener("click", async () => {
   $("#export-actions").hidden = false;
 });
 
-function esc(v) { return v == null ? "" : String(v).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]); }
+function esc(v) { return v == null ? "" : String(v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]); }
 </script>
 </body>
 </html>

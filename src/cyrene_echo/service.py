@@ -419,8 +419,7 @@ class EchoService:
         )
 
         def persist_outcome() -> None:
-            self.store.save_outcome(result, gate, succeeded, principal)
-            self.store.save_samples(samples, principal)
+            self.store.save_outcome(result, gate, succeeded, principal, samples=samples)
 
         if self.activity is None:
             persist_outcome()
