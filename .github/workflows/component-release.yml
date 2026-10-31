@@ -498,9 +498,30 @@ jobs:
             --oci-repository "$IMAGE_REPOSITORY" \
             --oci-digest "$IMAGE_DIGEST" \
             --oci-platform-json '{"os":"linux","architecture":"amd64"}' \
-            --output "$OUTPUT_ROOT/oci-descriptor.json"
+            --output "$OUTPUT_ROOT/oci-windows-descriptor.json"
           python platform-tools/tooling/release/create_component_manifest.py \
-            --descriptor "$OUTPUT_ROOT/oci-descriptor.json" \
+            --descriptor "$OUTPUT_ROOT/oci-windows-descriptor.json" \
+            --output-dir "$OUTPUT_ROOT/manifests"
+          python platform-tools/tooling/release/component_descriptor.py \
+            --component-id "$COMPONENT_ID" \
+            --version "$COMPONENT_VERSION" \
+            --channel "$CHANNEL" \
+            --repository "$SOURCE_REPOSITORY" \
+            --source-ref "$SOURCE_REF" \
+            --source-commit "$SOURCE_COMMIT" \
+            --run-id "$RUN_ID" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --catalog workspace-catalog/governance/component-catalog-v1.json \
+            --catalog-sha256 "$CATALOG_SHA256" \
+            --target-json '{"os":"linux","osVersion":"24.04","distribution":"ubuntu","distributionVersion":"24.04","architecture":"x86_64","runtime":"oci"}' \
+            --artifact-kind oci-image \
+            --subject-name "$IMAGE_REPOSITORY" \
+            --oci-repository "$IMAGE_REPOSITORY" \
+            --oci-digest "$IMAGE_DIGEST" \
+            --oci-platform-json '{"os":"linux","architecture":"amd64"}' \
+            --output "$OUTPUT_ROOT/oci-linux-descriptor.json"
+          python platform-tools/tooling/release/create_component_manifest.py \
+            --descriptor "$OUTPUT_ROOT/oci-linux-descriptor.json" \
             --output-dir "$OUTPUT_ROOT/manifests"
 
       - name: Attest Product Python bundle bytes

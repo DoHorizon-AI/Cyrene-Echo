@@ -27,7 +27,7 @@ from cyrene_echo.engine import (
     RunnerProfile,
     resolve_runner_binding,
 )
-from cyrene_echo.plugin_evaluation import UnavailableEvaluationPort
+from cyrene_echo.plugin_evaluation import EVALUATION_RUNNER_CONNECTION_ENV
 
 
 def _close(app: Any) -> None:
@@ -240,13 +240,15 @@ def test_unknown_runner_binding_is_rejected_before_execution(tmp_path: Path) -> 
     _close(app)
 
 
-def test_exact_match_binding_fails_closed_without_plugin_endpoint(tmp_path: Path) -> None:
+def test_exact_match_binding_fails_closed_without_plugin_endpoint(
+    tmp_path: Path, monkeypatch
+) -> None:
     """A missing evaluation Plugin never falls back to Product-local scoring. | 缺失插件不回退。"""
 
+    monkeypatch.delenv(EVALUATION_RUNNER_CONNECTION_ENV, raising=False)
     app = create_app(
         database_path=tmp_path / "echo.sqlite3",
         artifact_root=tmp_path / "artifacts",
-        engine=UnavailableEvaluationPort("connection_ref is not configured"),
     )
     with TestClient(app) as client:
         artifact = _publish_jsonl(client, [{"instruction": "q", "expected": "a", "actual": "a"}])

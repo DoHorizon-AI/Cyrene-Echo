@@ -17,19 +17,17 @@ from cyrene_echo.domain import (
     SampleRecord,
     utc_now,
 )
-from cyrene_echo.errors import EchoError
-from cyrene_echo.lifecycle import LifecycleActions, SendFeedback
 from cyrene_echo.store import EchoStore
 from cyrene_echo.ui_page import INDEX_HTML
 
 
 def test_ui_page_xss_escaping() -> None:
-    """Verify that quotes are properly escaped in the client UI script to prevent attribute breakout."""
+    """Verify quote escaping prevents attribute breakout in the client UI script."""
     html = INDEX_HTML
     # Check that esc function escapes quotes: " -> &quot; and ' -> &#39;
-    assert '"&quot;"' in html or '&quot;' in html
-    assert '&#39;' in html
-    assert 'function esc(v)' in html
+    assert '"&quot;"' in html or "&quot;" in html
+    assert "&#39;" in html
+    assert "function esc(v)" in html
 
 
 def test_immutable_resources_cannot_be_silently_overwritten(tmp_path: Path) -> None:
@@ -115,6 +113,7 @@ def test_immutable_resources_cannot_be_silently_overwritten(tmp_path: Path) -> N
 def test_evaluate_bumps_input_resource_version(tmp_path: Path) -> None:
     """Verify that calling evaluate on an evaluation-input bumps its resource_version."""
     from fastapi.testclient import TestClient
+
     from cyrene_echo.engine import EchoArtifactPlane
 
     root = tmp_path / "artifacts"
@@ -151,11 +150,14 @@ def test_evaluate_bumps_input_resource_version(tmp_path: Path) -> None:
         ).json()
 
         path = f"/api/v1/evaluation-inputs/{resource['id']}/actions/evaluate"
-        res = client.post(path, json={
-            "suiteId": suite["id"],
-            "engineBindingId": "exact-match-plugin",
-            "referenceAnswers": {"1": "right"},
-        })
+        res = client.post(
+            path,
+            json={
+                "suiteId": suite["id"],
+                "engineBindingId": "exact-match-plugin",
+                "referenceAnswers": {"1": "right"},
+            },
+        )
         assert res.status_code == 201
 
         # Check input resourceVersion is bumped to 2
@@ -165,8 +167,9 @@ def test_evaluate_bumps_input_resource_version(tmp_path: Path) -> None:
 
 
 def test_send_feedback_lineage_limit(tmp_path: Path) -> None:
-    """Verify that send_feedback rejects feedback sets with > 100 provenance references before export."""
+    """Reject feedback sets with > 100 provenance references before export."""
     from fastapi.testclient import TestClient
+
     from cyrene_echo.engine import EchoArtifactPlane
 
     root = tmp_path / "artifacts"
@@ -209,11 +212,14 @@ def test_send_feedback_lineage_limit(tmp_path: Path) -> None:
         ).json()
 
         ref_answers = {str(i + 1): f"right{i}" for i in range(101)}
-        run = client.post(f"/api/v1/evaluation-inputs/{resource['id']}/actions/evaluate", json={
-            "suiteId": suite["id"],
-            "engineBindingId": "exact-match-plugin",
-            "referenceAnswers": ref_answers,
-        }).json()
+        run = client.post(
+            f"/api/v1/evaluation-inputs/{resource['id']}/actions/evaluate",
+            json={
+                "suiteId": suite["id"],
+                "engineBindingId": "exact-match-plugin",
+                "referenceAnswers": ref_answers,
+            },
+        ).json()
 
         # Select all 101 samples
         fb = client.post(
@@ -233,4 +239,3 @@ def test_send_feedback_lineage_limit(tmp_path: Path) -> None:
         assert res.status_code == 422
         assert res.json()["code"] == "ECHO_PROVENANCE_LIMIT"
     app.state.echo_store.close()
-

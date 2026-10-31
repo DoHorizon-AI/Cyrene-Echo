@@ -278,7 +278,11 @@ class EchoStore:
         if samples:
             for sample in samples:
                 immutable_rows.append(
-                    ("sample", str(sample.id), sample.model_dump_json(by_alias=True, exclude_none=True))
+                    (
+                        "sample",
+                        str(sample.id),
+                        sample.model_dump_json(by_alias=True, exclude_none=True),
+                    )
                 )
         run_row = ("run", str(run.id), run.model_dump_json(by_alias=True, exclude_none=True))
         with self._lock, self._connection:

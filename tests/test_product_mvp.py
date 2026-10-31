@@ -119,6 +119,9 @@ def test_evaluation_gate_and_restart(tmp_path: Path) -> None:
         assert replay.json()["id"] == run["id"]
 
     _close(app)
+    assert database.is_file()
+    assert artifacts.is_dir()
+    assert any(path.is_file() for path in artifacts.rglob("*"))
     restarted = create_app(
         database_path=database,
         artifact_root=artifacts,
